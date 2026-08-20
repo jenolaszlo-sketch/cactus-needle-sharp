@@ -25,16 +25,16 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
 
       - name: Validate release tag and package versions
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:RELEASE_TAG
           if ($tag -notmatch '^v(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)$') {
@@ -46,6 +46,19 @@ jobs:
           $actualVersion = [string] $xml.Project.PropertyGroup.Version
           if ($actualVersion -cne $expectedVersion) {
             throw "Directory.Build.props declares version '$actualVersion', but release tag '$tag' requires '$expectedVersion'."
+          }
+
+          gh release view $tag --repo $env:GITHUB_REPOSITORY | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub Release '$tag' does not exist. Create and publish that release before running this workflow manually."
+          }
+
+          git fetch --force --depth=1 origin "refs/tags/$tag`:refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) { throw "Git tag '$tag' does not exist." }
+          $tagCommit = git rev-list -n 1 $tag
+          $checkedOutCommit = git rev-parse HEAD
+          if ($tagCommit -cne $checkedOutCommit) {
+            throw "Release tag '$tag' points to $tagCommit, but this run checked out $checkedOutCommit. Select the tagged commit or publish from the release event."
           }
 
       - name: Restore

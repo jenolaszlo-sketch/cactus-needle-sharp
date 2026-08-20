@@ -52,18 +52,18 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure runtime cache path
         shell: pwsh
         run: Add-Content -Path $env:GITHUB_ENV -Value "NEEDLE_TEST_CACHE_DIRECTORY=$env:RUNNER_TEMP/cactus-needle-runtime"
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
 
       - name: Cache official Needle runtime
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/cactus-needle-runtime
           key: needle-runtime-2.0.3-${{ runner.os }}-${{ runner.arch }}
