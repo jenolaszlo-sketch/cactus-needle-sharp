@@ -3,23 +3,31 @@ name: Publish NuGet packages
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub Release tag to publish (for example, v0.1.0-alpha.1)
+        required: true
+        type: string
 
 permissions:
   contents: write
   id-token: write
 
 concurrency:
-  group: nuget-${{ github.event.release.tag_name }}
+  group: nuget-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -28,7 +36,7 @@ jobs:
       - name: Validate release tag and package versions
         shell: pwsh
         run: |
-          $tag = '${{ github.event.release.tag_name }}'
+          $tag = $env:RELEASE_TAG
           if ($tag -notmatch '^v(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)$') {
             throw "Release tag '$tag' must use the form v1.2.3 or v1.2.3-preview.1."
           }
@@ -66,7 +74,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload '${{ github.event.release.tag_name }}' artifacts/packages/*.*nupkg --clobber
+        run: gh release upload $env:RELEASE_TAG artifacts/packages/*.*nupkg --clobber
 
       - name: Authenticate to NuGet.org with trusted publishing
         uses: NuGet/login@v1
