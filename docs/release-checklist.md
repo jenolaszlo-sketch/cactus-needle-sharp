@@ -12,7 +12,7 @@ Before every release:
 8. Confirm the package contains the wrapper README, Apache-2.0 license, NOTICE, and third-party notices.
 9. Confirm the package contains no model weights, native runtime, wheel, executable, or static library.
 10. Confirm the README and NuGet metadata still describe CactusNeedleSharp as an unofficial independent wrapper.
-11. Set the GitHub repository secret `NUGET_API_KEY` to a NuGet.org API key scoped only to the `CactusNeedleSharp`, `CactusNeedleSharp.Worker`, and `CactusNeedleSharp.Baize` packages.
-12. Update the single version in `Directory.Build.props`, then publish a GitHub Release whose tag is exactly `v<version>` (for example, `v0.1.0-alpha.1`). The release workflow validates, tests, packs, audits, attaches, and publishes all packages and symbols.
+11. Set the GitHub repository secret `NUGET_API_KEY` to a NuGet.org API key scoped only to the `CactusNeedleSharp` and `CactusNeedleSharp.Worker` packages.
+12. Update the single version in `Directory.Build.props`, then publish a GitHub Release whose tag is exactly `v<version>` (for example, `v0.1.0-alpha.1`). The release workflow validates, tests, packs, audits, attaches, and publishes both packages and symbols.
 
 Do not publish when an upstream artifact's governing terms are unclear.

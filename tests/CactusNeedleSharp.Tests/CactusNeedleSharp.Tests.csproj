@@ -7,6 +7,5 @@
     <PackageReference Include="coverlet.collector" Version="6.0.2"><PrivateAssets>all</PrivateAssets></PackageReference>
     <ProjectReference Include="../../src/CactusNeedleSharp/CactusNeedleSharp.csproj" />
     <ProjectReference Include="../CactusNeedleSharp.TestWorker/CactusNeedleSharp.TestWorker.csproj" />
-    <ProjectReference Include="../../src/CactusNeedleSharp.Baize/CactusNeedleSharp.Baize.csproj" />
   </ItemGroup>
 </Project>

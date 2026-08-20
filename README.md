@@ -25,7 +25,6 @@ Packages:
 
 - `CactusNeedleSharp` — managed API, native interop, artifact management, and worker-pool client.
 - `CactusNeedleSharp.Worker` — optional local .NET tool used for concurrent conversation isolation.
-- `CactusNeedleSharp.Baize` — optional conversation-oriented adapter contracts for using the worker pool as Baize's tool planner.
 
 ## Quick start
 
@@ -102,10 +101,6 @@ var arguments = result.Calls[0].DeserializeArguments<WeatherArguments>();
 ```
 
 Outcomes distinguish `Success`, `NoCall`, `LowConfidence`, and `Failed`; typed argument deserialization reports a `NeedleProtocolException` instead of leaking raw JSON errors.
-
-## Baize adapter
-
-`CactusNeedleSharp.Baize` keeps one leased worker session per conversation and converts portable Baize tool definitions into Needle schemas. It only plans calls and never executes them. Keeping it separate lets Baize select this planner, LLamaSharp, or another `IToolCallPlanner` implementation without coupling the core package.
 
 ## Add tools to a text-only model
 

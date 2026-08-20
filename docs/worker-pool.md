@@ -3,7 +3,7 @@
 Needle's confirmed native ABI stores model and conversation state globally and exposes no session handle. `NeedleWorkerPool` provides concurrent, isolated sessions by leasing one dedicated child process to each active conversation.
 
 ```text
-Baize / application
+Application
         │
         ├── lease ── worker A ── conversation A
         ├── lease ── worker B ── conversation B

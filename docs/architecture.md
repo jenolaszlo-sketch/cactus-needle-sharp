@@ -8,6 +8,6 @@
 
 For concurrent applications, `NeedleWorkerPool` leases a dedicated `CactusNeedleSharp.Worker` process to each conversation. Base-model workers are reset and reused; custom-weight or unhealthy workers are terminated. A versioned handshake, bounded frames, queue limits, admission control, idle expiry, and idempotent lifecycle state protect the process boundary. See `worker-pool.md`.
 
-`IToolCallPlanner` is the backend-neutral planning seam. `CactusNeedleSharp.Baize` adapts portable Baize tool definitions to conversation-isolated Needle sessions without putting Baize policy or tool execution into the core.
+`IToolCallPlanner` is the backend-neutral planning seam, allowing applications to evaluate CactusNeedleSharp without coupling their orchestration layer to it.
 
 Schema validity is not semantic correctness. Applications must authorize, validate, and confirm calls before execution.

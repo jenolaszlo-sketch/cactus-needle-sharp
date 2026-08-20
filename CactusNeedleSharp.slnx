@@ -1,5 +1,5 @@
 <Solution>
-  <Folder Name="/src/"><Project Path="src/CactusNeedleSharp/CactusNeedleSharp.csproj" /><Project Path="src/CactusNeedleSharp.Worker/CactusNeedleSharp.Worker.csproj" /><Project Path="src/CactusNeedleSharp.Baize/CactusNeedleSharp.Baize.csproj" /></Folder>
+  <Folder Name="/src/"><Project Path="src/CactusNeedleSharp/CactusNeedleSharp.csproj" /><Project Path="src/CactusNeedleSharp.Worker/CactusNeedleSharp.Worker.csproj" /></Folder>
   <Folder Name="/tests/"><Project Path="tests/CactusNeedleSharp.Tests/CactusNeedleSharp.Tests.csproj" /><Project Path="tests/CactusNeedleSharp.IntegrationTests/CactusNeedleSharp.IntegrationTests.csproj" /><Project Path="tests/CactusNeedleSharp.TestWorker/CactusNeedleSharp.TestWorker.csproj" /></Folder>
   <Folder Name="/samples/"><Project Path="samples/ToolCalling/ToolCalling.csproj" /><Project Path="samples/PooledToolCalling/PooledToolCalling.csproj" /></Folder>
   <Folder Name="/benchmarks/"><Project Path="benchmarks/CactusNeedleSharp.Benchmarks/CactusNeedleSharp.Benchmarks.csproj" /></Folder>
