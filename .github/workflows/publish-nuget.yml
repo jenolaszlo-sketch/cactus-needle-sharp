@@ -1,65 +1,54 @@
 name: Publish NuGet packages
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing GitHub Release tag to publish (for example, v0.1.0-alpha.1)
-        required: true
-        type: string
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 concurrency:
-  group: nuget-${{ github.event.release.tag_name || inputs.tag }}
+  group: nuget-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    env:
-      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
 
-      - name: Validate release tag and package versions
+      - name: Resolve package version
+        id: version
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = $env:RELEASE_TAG
-          if ($tag -notmatch '^v(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)$') {
-            throw "Release tag '$tag' must use the form v1.2.3 or v1.2.3-preview.1."
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tag = $env:GITHUB_REF_NAME
+            if ($tag -notmatch '^v(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)$') {
+              throw "Tag '$tag' must use the form v1.2.3 or v1.2.3-preview.1."
+            }
+            $version = $Matches.version
+          }
+          else {
+            [xml] $xml = Get-Content -LiteralPath Directory.Build.props
+            $version = [string] $xml.Project.PropertyGroup.Version
           }
 
-          $expectedVersion = $Matches.version
-          [xml] $xml = Get-Content -LiteralPath Directory.Build.props
-          $actualVersion = [string] $xml.Project.PropertyGroup.Version
-          if ($actualVersion -cne $expectedVersion) {
-            throw "Directory.Build.props declares version '$actualVersion', but release tag '$tag' requires '$expectedVersion'."
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
+            throw "Package version '$version' is not a supported semantic version."
           }
 
-          gh release view $tag --repo $env:GITHUB_REPOSITORY | Out-Null
-          if ($LASTEXITCODE -ne 0) {
-            throw "GitHub Release '$tag' does not exist. Create and publish that release before running this workflow manually."
-          }
-
-          git fetch --force --depth=1 origin "refs/tags/$tag`:refs/tags/$tag"
-          if ($LASTEXITCODE -ne 0) { throw "Git tag '$tag' does not exist." }
-          $tagCommit = git rev-list -n 1 $tag
-          $checkedOutCommit = git rev-parse HEAD
-          if ($tagCommit -cne $checkedOutCommit) {
-            throw "Release tag '$tag' points to $tagCommit, but this run checked out $checkedOutCommit. Select the tagged commit or publish from the release event."
-          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Publishing CactusNeedleSharp $version"
 
       - name: Restore
         run: dotnet restore CactusNeedleSharp.slnx
@@ -68,9 +57,11 @@ jobs:
         run: dotnet test tests/CactusNeedleSharp.Tests/CactusNeedleSharp.Tests.csproj --no-restore --configuration Release --logger "console;verbosity=normal"
 
       - name: Pack
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          dotnet pack src/CactusNeedleSharp/CactusNeedleSharp.csproj --no-restore --configuration Release --output artifacts/packages
-          dotnet pack src/CactusNeedleSharp.Worker/CactusNeedleSharp.Worker.csproj --no-restore --configuration Release --output artifacts/packages
+          dotnet pack src/CactusNeedleSharp/CactusNeedleSharp.csproj --no-restore --configuration Release --output artifacts/packages --property:PackageVersion="$PACKAGE_VERSION"
+          dotnet pack src/CactusNeedleSharp.Worker/CactusNeedleSharp.Worker.csproj --no-restore --configuration Release --output artifacts/packages --property:PackageVersion="$PACKAGE_VERSION"
 
       - name: Verify package contents and licensing boundary
         shell: pwsh
@@ -82,12 +73,6 @@ jobs:
           foreach ($package in $packages) {
             ./eng/Verify-NuGetPackage.ps1 -PackagePath $package.FullName
           }
-
-      - name: Attach packages to GitHub Release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload $env:RELEASE_TAG artifacts/packages/*.*nupkg --clobber
 
       - name: Authenticate to NuGet.org with trusted publishing
         uses: NuGet/login@v1
