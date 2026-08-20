@@ -5,7 +5,7 @@ on:
     types: [published]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: nuget-${{ github.event.release.tag_name }}
@@ -33,17 +33,10 @@ jobs:
           }
 
           $expectedVersion = $Matches.version
-          $projects = @(
-            'src/CactusNeedleSharp/CactusNeedleSharp.csproj',
-            'src/CactusNeedleSharp.Worker/CactusNeedleSharp.Worker.csproj'
-          )
-
-          foreach ($project in $projects) {
-            [xml] $xml = Get-Content -LiteralPath $project
-            $actualVersion = [string] $xml.Project.PropertyGroup.Version
-            if ($actualVersion -cne $expectedVersion) {
-              throw "$project declares version '$actualVersion', but release tag '$tag' requires '$expectedVersion'."
-            }
+          [xml] $xml = Get-Content -LiteralPath Directory.Build.props
+          $actualVersion = [string] $xml.Project.PropertyGroup.Version
+          if ($actualVersion -cne $expectedVersion) {
+            throw "Directory.Build.props declares version '$actualVersion', but release tag '$tag' requires '$expectedVersion'."
           }
 
       - name: Restore
@@ -56,17 +49,24 @@ jobs:
         run: |
           dotnet pack src/CactusNeedleSharp/CactusNeedleSharp.csproj --no-restore --configuration Release --output artifacts/packages
           dotnet pack src/CactusNeedleSharp.Worker/CactusNeedleSharp.Worker.csproj --no-restore --configuration Release --output artifacts/packages
+          dotnet pack src/CactusNeedleSharp.Baize/CactusNeedleSharp.Baize.csproj --no-restore --configuration Release --output artifacts/packages
 
       - name: Verify package contents and licensing boundary
         shell: pwsh
         run: |
           $packages = @(Get-ChildItem artifacts/packages/CactusNeedleSharp*.nupkg)
-          if ($packages.Count -ne 2) {
-            throw "Expected core and worker NuGet packages; found $($packages.Count)."
+          if ($packages.Count -ne 3) {
+            throw "Expected core, worker, and Baize NuGet packages; found $($packages.Count)."
           }
           foreach ($package in $packages) {
             ./eng/Verify-NuGetPackage.ps1 -PackagePath $package.FullName
           }
+
+      - name: Attach packages to GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload '${{ github.event.release.tag_name }}' artifacts/packages/*.*nupkg --clobber
 
       - name: Publish to NuGet.org
         shell: pwsh

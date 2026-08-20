@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>CactusNeedleSharp.TestWorker</AssemblyName>
+    <RootNamespace>CactusNeedleSharp.TestWorker</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/CactusNeedleSharp/CactusNeedleSharp.csproj" />
+  </ItemGroup>
+</Project>

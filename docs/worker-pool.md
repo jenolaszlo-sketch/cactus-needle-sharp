@@ -28,7 +28,7 @@ new NeedleWorkerPoolOptions
 };
 ```
 
-Each worker communicates using correlation-checked newline-delimited JSON over redirected standard streams. Protocol responses carry a private prefix so incidental native stdout cannot be mistaken for a response; diagnostics are drained separately. Requests within one session are serialized.
+Each worker communicates using correlation-checked newline-delimited JSON over redirected standard streams. A versioned capability handshake rejects incompatible core/worker combinations. Protocol responses carry a private prefix so incidental native stdout cannot be mistaken for a response; diagnostics are drained separately. Requests within one session are serialized and bounded by `MaximumProtocolMessageLength`.
 
 `MaximumWorkers` bounds native processes and active conversations. A session waiting beyond the bound observes its cancellation token. Disposing a base-model session closes its native session and returns a healthy process to the pool. A custom-weight worker is terminated instead because the upstream engine cannot unload weights safely. Timed-out or protocol-failed workers are terminated and are never returned to the pool.
 
@@ -36,4 +36,6 @@ The artifact cache uses both an in-process gate and a cross-process file lock, s
 
 Choose `MaximumWorkers` from measured memory and latency rather than CPU count alone. The default is capped at four, but embedded devices and custom weights may require a smaller limit.
 
-Pool disposal terminates all workers, including workers with outstanding leases. Applications should normally dispose conversation sessions before disposing the pool.
+`MaximumQueueLength` and `QueueTimeout` bound backpressure. `IdleWorkerTimeout` retires stale workers when they are next leased, `WarmAsync` prestarts a chosen number of processes, and `AdmissionCheck` can reject new processes under application-specific memory pressure. Pool counters expose active, idle, and waiting counts; OpenTelemetry-compatible meters report queue duration and worker start, reuse, discard, and failure events.
+
+Session disposal waits for an in-flight operation before returning its worker and is idempotent under concurrent calls. Pool disposal cancels queued acquisitions and terminates all workers, including workers with outstanding leases. Applications should normally dispose conversation sessions before disposing the pool.

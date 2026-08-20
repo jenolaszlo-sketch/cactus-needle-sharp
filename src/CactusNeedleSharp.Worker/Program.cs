@@ -5,7 +5,10 @@ return await WorkerHost.RunAsync();
 
 internal static class WorkerHost
 {
-    private const string ProtocolPrefix = "@cactusneedlesharp:";
+    private static readonly int MaximumRequestLength =
+        int.TryParse(Environment.GetEnvironmentVariable("CACTUSNEEDLE_MAX_PROTOCOL_MESSAGE_LENGTH"), out var configured) && configured >= 1024
+            ? configured
+            : 1024 * 1024;
 
     internal static async Task<int> RunAsync()
     {
@@ -13,16 +16,24 @@ internal static class WorkerHost
         NeedleClient? client = null;
         try
         {
-            while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
+            while (await WorkerProtocol.ReadBoundedLineAsync(Console.In, MaximumRequestLength).ConfigureAwait(false) is { } line)
             {
                 WorkerRequest? request = null;
                 try
                 {
                     request = JsonSerializer.Deserialize<WorkerRequest>(line, NeedleProtocol.Json)
                         ?? throw new NeedleWorkerException("Worker received an empty request.");
+                    if (request.ProtocolVersion != WorkerProtocol.Version)
+                        throw new NeedleWorkerException($"Unsupported worker protocol {request.ProtocolVersion}; expected {WorkerProtocol.Version}.");
                     object? payload = request.Operation switch
                     {
-                        "ping" => new { ready = true },
+                        "ping" => new WorkerHandshake
+                        {
+                            ProtocolVersion = WorkerProtocol.Version,
+                            WorkerVersion = typeof(WorkerHost).Assembly.GetName().Version?.ToString() ?? "unknown",
+                            RuntimeFramework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
+                            Capabilities = ["sessions", "reset", "structured-output"]
+                        },
                         "initialize" => await InitializeAsync(request),
                         "complete" => await CompleteAsync(request),
                         "reset" => await ResetAsync(),
@@ -93,7 +104,7 @@ internal static class WorkerHost
 
     private static async Task RespondAsync(WorkerResponse response)
     {
-        await Console.Out.WriteLineAsync(ProtocolPrefix + JsonSerializer.Serialize(response, NeedleProtocol.Json)).ConfigureAwait(false);
+        await Console.Out.WriteLineAsync(WorkerProtocol.Prefix + JsonSerializer.Serialize(response, NeedleProtocol.Json)).ConfigureAwait(false);
         await Console.Out.FlushAsync().ConfigureAwait(false);
     }
 }

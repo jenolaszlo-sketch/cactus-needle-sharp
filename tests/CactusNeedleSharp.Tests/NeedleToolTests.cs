@@ -33,5 +33,14 @@ public sealed class NeedleToolTests
     [Fact]
     public void ProtocolRejectsMalformedJson() => Assert.Throws<NeedleProtocolException>(() => NeedleProtocol.Parse("{"u8));
 
+    [Fact]
+    public void TypedArgumentsAndOutcomeAreExplicit()
+    {
+        var call = new NeedleToolCall { Name = "search", Arguments = JsonSerializer.SerializeToElement(new { query = "needle" }) };
+        Assert.Equal("needle", call.DeserializeArguments<SearchArguments>().Query);
+        var compilation = new ToolCallCompilation { Success = true, Calls = [call], Confidence = .2 };
+        Assert.Equal(NeedleCompilationOutcome.LowConfidence, compilation.GetOutcome(new() { MinimumConfidence = .8 }));
+    }
+
     private sealed record SearchArguments(string Query, string? Path);
 }

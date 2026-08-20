@@ -39,9 +39,16 @@ jobs:
       - run: dotnet pack src/CactusNeedleSharp/CactusNeedleSharp.csproj --no-restore --configuration Release --output artifacts/packages
       - run: dotnet restore src/CactusNeedleSharp.Worker/CactusNeedleSharp.Worker.csproj
       - run: dotnet pack src/CactusNeedleSharp.Worker/CactusNeedleSharp.Worker.csproj --no-restore --configuration Release --output artifacts/packages
+      - run: dotnet restore src/CactusNeedleSharp.Baize/CactusNeedleSharp.Baize.csproj
+      - run: dotnet pack src/CactusNeedleSharp.Baize/CactusNeedleSharp.Baize.csproj --no-restore --configuration Release --output artifacts/packages
       - name: Verify package contents and licensing boundary
         shell: pwsh
         run: |
-          $packages = Get-ChildItem artifacts/packages/CactusNeedleSharp*.nupkg
-          if ($packages.Count -ne 2) { throw "Expected core and worker NuGet packages; found $($packages.Count)." }
+          $packages = @(Get-ChildItem artifacts/packages/CactusNeedleSharp*.nupkg)
+          if ($packages.Count -ne 3) { throw "Expected core, worker, and Baize NuGet packages; found $($packages.Count)." }
           foreach ($package in $packages) { ./eng/Verify-NuGetPackage.ps1 -PackagePath $package.FullName }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: artifacts/packages/*.*nupkg
+          if-no-files-found: error

@@ -6,6 +6,8 @@
 
 `NeedleNative` is the narrow ABI compatibility layer. `NeedleSession` owns the process-global runtime lease and serializes its own inference. Public contracts contain no pointers or ABI details, allowing a future worker-process transport without public API changes.
 
-For concurrent applications, `NeedleWorkerPool` leases a dedicated `CactusNeedleSharp.Worker` process to each conversation. Base-model workers are reset and reused; custom-weight or unhealthy workers are terminated. See `worker-pool.md`.
+For concurrent applications, `NeedleWorkerPool` leases a dedicated `CactusNeedleSharp.Worker` process to each conversation. Base-model workers are reset and reused; custom-weight or unhealthy workers are terminated. A versioned handshake, bounded frames, queue limits, admission control, idle expiry, and idempotent lifecycle state protect the process boundary. See `worker-pool.md`.
+
+`IToolCallPlanner` is the backend-neutral planning seam. `CactusNeedleSharp.Baize` adapts portable Baize tool definitions to conversation-isolated Needle sessions without putting Baize policy or tool execution into the core.
 
 Schema validity is not semantic correctness. Applications must authorize, validate, and confirm calls before execution.

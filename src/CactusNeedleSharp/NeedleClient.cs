@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CactusNeedleSharp;
 
-public sealed class NeedleClient : IToolCallCompiler, INeedleSessionFactory, IStructuredExtractor, IAsyncDisposable
+public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleSessionFactory, IStructuredExtractor, IAsyncDisposable
 {
     private static readonly SemaphoreSlim RuntimeLease = new(1, 1);
     private static string? LoadedWeightsPath;
@@ -117,6 +117,7 @@ internal sealed class NeedleSession : INeedleSession
     private readonly bool _customWeights;
     private bool _disposed;
     public IReadOnlyList<NeedleTool> Tools { get; }
+    public string SessionId { get; } = Guid.NewGuid().ToString("N");
 
     internal NeedleSession(IReadOnlyList<NeedleTool> tools, NeedleOptions defaults, ILogger logger, SemaphoreSlim lease, bool customWeights)
     { Tools = tools; _defaults = defaults; _logger = logger; _lease = lease; _customWeights = customWeights; }
@@ -129,6 +130,7 @@ internal sealed class NeedleSession : INeedleSession
         await _flight.WaitAsync(cancellationToken).ConfigureAwait(false);
         var stopwatch = Stopwatch.StartNew();
         using var activity = NeedleDiagnostics.Activities.StartActivity("needle.inference");
+        activity?.SetTag("needle.session.id", SessionId);
         try
         {
             cancellationToken.ThrowIfCancellationRequested();

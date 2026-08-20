@@ -25,6 +25,7 @@ Packages:
 
 - `CactusNeedleSharp` — managed API, native interop, artifact management, and worker-pool client.
 - `CactusNeedleSharp.Worker` — optional local .NET tool used for concurrent conversation isolation.
+- `CactusNeedleSharp.Baize` — optional conversation-oriented adapter contracts for using the worker pool as Baize's tool planner.
 
 ## Quick start
 
@@ -50,7 +51,7 @@ if (result.IsConfident(0.80))
         Console.WriteLine($"{call.Name}: {call.Arguments}");
 ```
 
-The first call downloads the third-party Needle 2 platform runtime from the official Cactus Compute distribution into a separate local cache. The runtime is not embedded in the NuGet package. Set `Offline = true` after the artifact is present, or provide `NativeLibraryPath`/upstream `NEEDLE_LIB_PATH` for air-gapped use. No telemetry is collected.
+The first call downloads the third-party Needle 2 platform runtime from the official Cactus Compute distribution into a separate local cache. The runtime wheel size and SHA-256 are pinned, and a manifest protects subsequent offline reuse. The runtime is not embedded in the NuGet package. Set `Offline = true` after the artifact is present, or provide `NativeLibraryPath`/upstream `NEEDLE_LIB_PATH` for air-gapped use. No telemetry is collected.
 
 Model-dependent tests are isolated in `CactusNeedleSharp.IntegrationTests` and run only when `NEEDLE_RUN_INTEGRATION_TESTS=1`; ordinary unit tests never download artifacts. BenchmarkDotNet benchmarks are kept separate from tests so cold initialization is not reported as warm inference throughput.
 
@@ -77,15 +78,34 @@ using CactusNeedleSharp.Worker;
 
 await using var pool = new NeedleWorkerPool(new()
 {
-    WorkerPath = typeof(NeedleWorkerMarker).Assembly.Location,
-    MaximumWorkers = 4
+    MaximumWorkers = 4,
+    MaximumQueueLength = 100,
+    QueueTimeout = TimeSpan.FromSeconds(10)
 });
+
+await pool.WarmAsync(2);
 
 await using var conversation = await pool.CreateSessionAsync(tools);
 var decision = await conversation.CompleteAsync(userIntent);
 ```
 
-Reference the `CactusNeedleSharp.Worker` project, deploy its build output alongside the application, or install the `CactusNeedleSharp.Worker` local .NET tool. See [conversation-isolated worker pools](docs/worker-pool.md).
+Worker auto-discovery checks the application directory; `WorkerPath` remains available for explicit deployment and local-tool configurations. Reference the `CactusNeedleSharp.Worker` project, deploy its build output alongside the application, or install the `CactusNeedleSharp.Worker` local .NET tool. See [conversation-isolated worker pools](docs/worker-pool.md).
+
+## Dependency injection and typed outcomes
+
+```csharp
+services.AddCactusNeedleSharp(new NeedleOptions { Offline = true });
+services.AddCactusNeedleSharpWorkerPool(new() { MaximumWorkers = 4 });
+
+var outcome = result.GetOutcome(new() { MinimumConfidence = .80 });
+var arguments = result.Calls[0].DeserializeArguments<WeatherArguments>();
+```
+
+Outcomes distinguish `Success`, `NoCall`, `LowConfidence`, and `Failed`; typed argument deserialization reports a `NeedleProtocolException` instead of leaking raw JSON errors.
+
+## Baize adapter
+
+`CactusNeedleSharp.Baize` keeps one leased worker session per conversation and converts portable Baize tool definitions into Needle schemas. It only plans calls and never executes them. Keeping it separate lets Baize select this planner, LLamaSharp, or another `IToolCallPlanner` implementation without coupling the core package.
 
 ## Add tools to a text-only model
 

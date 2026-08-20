@@ -8,6 +8,13 @@ public interface IToolCallCompiler
         NeedleCompilationOptions? options = null, CancellationToken cancellationToken = default);
 }
 
+public interface IToolCallPlanner : IToolCallCompiler;
+
+public interface INeedleClientFactory
+{
+    ValueTask<NeedleClient> CreateAsync(CancellationToken cancellationToken = default);
+}
+
 public interface IStructuredExtractor
 {
     ValueTask<NeedleExtractionResult<T>> ExtractAsync<T>(string input,
@@ -16,6 +23,7 @@ public interface IStructuredExtractor
 
 public interface INeedleSession : IAsyncDisposable
 {
+    string SessionId { get; }
     IReadOnlyList<NeedleTool> Tools { get; }
     ValueTask<ToolCallCompilation> CompleteAsync(string input, NeedleCompilationOptions? options = null,
         CancellationToken cancellationToken = default);
@@ -44,7 +52,18 @@ public sealed record ToolCallCompilation
     public double? PrefillTokensPerSecond { get; init; }
     public double? DecodeTokensPerSecond { get; init; }
     public bool IsConfident(double threshold) => Success && Calls.Count > 0 && Confidence is >= 0 && Confidence >= threshold;
+    public NeedleCompilationOutcome GetOutcome(NeedleConfidencePolicy? policy = null)
+    {
+        if (!Success) return NeedleCompilationOutcome.Failed;
+        if (Calls.Count == 0) return NeedleCompilationOutcome.NoCall;
+        var minimum = (policy ?? new()).MinimumConfidence;
+        return Confidence is null || Confidence >= minimum
+            ? NeedleCompilationOutcome.Success
+            : NeedleCompilationOutcome.LowConfidence;
+    }
 }
+
+public enum NeedleCompilationOutcome { Success, NoCall, LowConfidence, Failed }
 
 public sealed record NeedleToolCall
 {

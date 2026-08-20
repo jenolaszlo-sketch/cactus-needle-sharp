@@ -1,5 +1,6 @@
 using CactusNeedleSharp;
 using System.IO.Compression;
+using System.Security.Cryptography;
 
 namespace CactusNeedleSharp.Tests;
 
@@ -39,5 +40,21 @@ public sealed class ArtifactTests
 
         var preserved = Directory.GetFiles(Path.Combine(root, "upstream-notices"), "*").Single();
         Assert.Equal("authoritative upstream license\n", File.ReadAllText(preserved).Replace("\r\n", "\n"));
+    }
+
+    [Fact]
+    public async Task ArtifactChecksumRejectsTampering()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"needle-checksum-{Guid.NewGuid():N}");
+        await File.WriteAllTextAsync(path, "verified");
+        try
+        {
+            var expected = Convert.ToHexString(SHA256.HashData("verified"u8.ToArray())).ToLowerInvariant();
+            await HuggingFaceNeedleArtifactProvider.VerifyFileAsync(path, expected);
+            await File.AppendAllTextAsync(path, "tampered");
+            await Assert.ThrowsAsync<NeedleArtifactException>(() =>
+                HuggingFaceNeedleArtifactProvider.VerifyFileAsync(path, expected).AsTask());
+        }
+        finally { File.Delete(path); }
     }
 }

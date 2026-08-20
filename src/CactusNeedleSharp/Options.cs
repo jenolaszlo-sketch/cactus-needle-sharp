@@ -6,6 +6,8 @@ public sealed record NeedleOptions
     public string? NativeLibraryPath { get; init; }
     public string? ModelPath { get; init; }
     public bool Offline { get; init; }
+    public bool VerifyArtifactIntegrity { get; init; } = true;
+    public string? ExpectedNativeLibrarySha256 { get; init; }
     public int ResponseBufferSize { get; init; } = 65_536;
     public int DefaultMaxNewTokens { get; init; } = 256;
     public string? ToolIndexPath { get; init; }
