@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/CactusNeedleSharp/CactusNeedleSharp.csproj" />
+    <ProjectReference Include="../../src/CactusNeedleSharp.Worker/CactusNeedleSharp.Worker.csproj" />
+  </ItemGroup>
+</Project>

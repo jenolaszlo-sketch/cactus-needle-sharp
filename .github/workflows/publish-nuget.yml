@@ -1,0 +1,85 @@
+name: Publish NuGet packages
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nuget-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Validate release tag and package versions
+        shell: pwsh
+        run: |
+          $tag = '${{ github.event.release.tag_name }}'
+          if ($tag -notmatch '^v(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)$') {
+            throw "Release tag '$tag' must use the form v1.2.3 or v1.2.3-preview.1."
+          }
+
+          $expectedVersion = $Matches.version
+          $projects = @(
+            'src/CactusNeedleSharp/CactusNeedleSharp.csproj',
+            'src/CactusNeedleSharp.Worker/CactusNeedleSharp.Worker.csproj'
+          )
+
+          foreach ($project in $projects) {
+            [xml] $xml = Get-Content -LiteralPath $project
+            $actualVersion = [string] $xml.Project.PropertyGroup.Version
+            if ($actualVersion -cne $expectedVersion) {
+              throw "$project declares version '$actualVersion', but release tag '$tag' requires '$expectedVersion'."
+            }
+          }
+
+      - name: Restore
+        run: dotnet restore CactusNeedleSharp.slnx
+
+      - name: Build and test
+        run: dotnet test tests/CactusNeedleSharp.Tests/CactusNeedleSharp.Tests.csproj --no-restore --configuration Release --logger "console;verbosity=normal"
+
+      - name: Pack
+        run: |
+          dotnet pack src/CactusNeedleSharp/CactusNeedleSharp.csproj --no-restore --configuration Release --output artifacts/packages
+          dotnet pack src/CactusNeedleSharp.Worker/CactusNeedleSharp.Worker.csproj --no-restore --configuration Release --output artifacts/packages
+
+      - name: Verify package contents and licensing boundary
+        shell: pwsh
+        run: |
+          $packages = @(Get-ChildItem artifacts/packages/CactusNeedleSharp*.nupkg)
+          if ($packages.Count -ne 2) {
+            throw "Expected core and worker NuGet packages; found $($packages.Count)."
+          }
+          foreach ($package in $packages) {
+            ./eng/Verify-NuGetPackage.ps1 -PackagePath $package.FullName
+          }
+
+      - name: Publish to NuGet.org
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:NUGET_API_KEY)) {
+            throw 'The NUGET_API_KEY repository secret is not configured.'
+          }
+          foreach ($package in Get-ChildItem artifacts/packages/CactusNeedleSharp*.nupkg) {
+            dotnet nuget push $package.FullName `
+              --api-key $env:NUGET_API_KEY `
+              --source https://api.nuget.org/v3/index.json `
+              --skip-duplicate
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

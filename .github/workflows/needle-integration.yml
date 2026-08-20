@@ -1,0 +1,85 @@
+name: Needle native integration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/CactusNeedleSharp.IntegrationTests/**"
+      - ".github/workflows/needle-integration.yml"
+      - "Directory.Build.props"
+      - "global.json"
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: needle-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            runner: windows-2025
+            architecture: X64
+          - name: Windows ARM64
+            runner: windows-11-arm
+            architecture: Arm64
+          - name: Linux x64
+            runner: ubuntu-24.04
+            architecture: X64
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            architecture: Arm64
+          - name: macOS ARM64
+            runner: macos-15
+            architecture: Arm64
+
+    env:
+      NEEDLE_RUN_INTEGRATION_TESTS: "1"
+      NEEDLE_EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+      NEEDLE_TEST_CACHE_DIRECTORY: ${{ runner.temp }}/cactus-needle-runtime
+      DOTNET_NOLOGO: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Cache official Needle runtime
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cactus-needle-runtime
+          key: needle-runtime-2.0.3-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Restore
+        run: dotnet restore tests/CactusNeedleSharp.IntegrationTests/CactusNeedleSharp.IntegrationTests.csproj
+
+      - name: Build
+        run: dotnet build tests/CactusNeedleSharp.IntegrationTests/CactusNeedleSharp.IntegrationTests.csproj --no-restore --configuration Release
+
+      - name: Select worker path (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: "Add-Content -Path $env:GITHUB_ENV -Value 'NEEDLE_WORKER_PATH=${{ github.workspace }}/src/CactusNeedleSharp.Worker/bin/Release/net8.0/CactusNeedleSharp.Worker.exe'"
+
+      - name: Select worker path (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: echo "NEEDLE_WORKER_PATH=${{ github.workspace }}/src/CactusNeedleSharp.Worker/bin/Release/net8.0/CactusNeedleSharp.Worker" >> "$GITHUB_ENV"
+
+      - name: Run native integration and offline reuse tests
+        run: dotnet test tests/CactusNeedleSharp.IntegrationTests/CactusNeedleSharp.IntegrationTests.csproj --no-build --configuration Release --filter "Category=NeedleIntegration" --logger "console;verbosity=normal"
