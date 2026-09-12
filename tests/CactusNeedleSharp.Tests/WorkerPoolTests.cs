@@ -88,6 +88,38 @@ public sealed class WorkerPoolTests
         await pool.DisposeAsync();
     }
 
+    [Fact]
+    public async Task ReturnedWorkerWakesQueuedSession()
+    {
+        await using var pool = CreatePool(new() { MaximumWorkers = 2 });
+        await using var first = await pool.CreateSessionAsync([Tool]);
+        await using var second = await pool.CreateSessionAsync([Tool]);
+        var pending = pool.CreateSessionAsync([Tool]).AsTask();
+        await Task.Delay(200);
+        Assert.False(pending.IsCompleted, "A third conversation must wait while both workers are leased.");
+        await first.DisposeAsync();
+        var completed = await Task.WhenAny(pending, Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.Same(pending, completed);
+        await using var third = await pending;
+        Assert.Equal(2, pool.WorkerCount);
+    }
+
+    [Fact]
+    public async Task WarmAndCreateNeverExceedMaximumWorkers()
+    {
+        await using var pool = CreatePool(new() { MaximumWorkers = 2 });
+        var warm = pool.WarmAsync(2).AsTask();
+        var first = await pool.CreateSessionAsync([Tool]);
+        var second = await pool.CreateSessionAsync([Tool]);
+        Assert.True(pool.WorkerCount <= 2, $"Worker count {pool.WorkerCount} exceeded the maximum.");
+        await first.DisposeAsync();
+        var completed = await Task.WhenAny(warm, Task.Delay(TimeSpan.FromSeconds(30)));
+        Assert.Same(warm, completed);
+        await warm;
+        Assert.True(pool.WorkerCount <= 2, $"Worker count {pool.WorkerCount} exceeded the maximum after warming.");
+        await second.DisposeAsync();
+    }
+
     private static NeedleWorkerPool CreatePool(NeedleWorkerPoolOptions? overrides = null)
     {
         var defaults = overrides ?? new();

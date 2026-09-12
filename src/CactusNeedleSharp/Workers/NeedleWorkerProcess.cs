@@ -16,8 +16,24 @@ internal sealed class NeedleWorkerProcess : IAsyncDisposable
 
     internal DateTimeOffset LastUsedAt { get; private set; } = DateTimeOffset.UtcNow;
 
-    internal bool IsHealthy => Volatile.Read(ref _disposed) == 0 && !_process.HasExited;
-    internal int ProcessId => IsHealthy ? _process.Id : -1;
+    internal bool IsHealthy
+    {
+        get
+        {
+            if (Volatile.Read(ref _disposed) != 0) return false;
+            try { return !_process.HasExited; }
+            catch (Exception exception) when (exception is ObjectDisposedException or InvalidOperationException) { return false; }
+        }
+    }
+
+    internal int ProcessId
+    {
+        get
+        {
+            try { return IsHealthy ? _process.Id : -1; }
+            catch (Exception exception) when (exception is ObjectDisposedException or InvalidOperationException) { return -1; }
+        }
+    }
 
     private NeedleWorkerProcess(Process process, NeedleWorkerPoolOptions options, ILogger logger)
     { _process = process; _options = options; _logger = logger; }
@@ -93,9 +109,18 @@ internal sealed class NeedleWorkerProcess : IAsyncDisposable
             {
                 Id = id,
                 Operation = operation,
-                Payload = payload is null ? null : JsonSerializer.SerializeToElement(payload, NeedleProtocol.Json)
+                Payload = payload switch
+                {
+                    null => null,
+                    WorkerInitializePayload initialize => JsonSerializer.SerializeToElement(
+                        initialize, NeedleJsonContext.Default.WorkerInitializePayload),
+                    WorkerCompletePayload complete => JsonSerializer.SerializeToElement(
+                        complete, NeedleJsonContext.Default.WorkerCompletePayload),
+                    _ => throw new NeedleWorkerException(
+                        $"Needle worker request has an unsupported '{payload.GetType().Name}' payload.")
+                }
             };
-            var line = JsonSerializer.Serialize(request, NeedleProtocol.Json);
+            var line = JsonSerializer.Serialize(request, NeedleJsonContext.Default.WorkerRequest);
             if (line.Length > _options.MaximumProtocolMessageLength)
                 throw new NeedleWorkerException($"Needle worker request exceeded the {_options.MaximumProtocolMessageLength}-character protocol limit.");
             await _process.StandardInput.WriteLineAsync(line.AsMemory(), timeout.Token).ConfigureAwait(false);
@@ -109,7 +134,8 @@ internal sealed class NeedleWorkerProcess : IAsyncDisposable
                 if (!responseLine.StartsWith(WorkerProtocol.Prefix, StringComparison.Ordinal))
                     _logger.LogDebug("Needle worker {ProcessId} stdout: {Message}", _process.Id, responseLine);
             } while (!responseLine.StartsWith(WorkerProtocol.Prefix, StringComparison.Ordinal));
-            var response = JsonSerializer.Deserialize<WorkerResponse>(responseLine[WorkerProtocol.Prefix.Length..], NeedleProtocol.Json)
+            var response = JsonSerializer.Deserialize(
+                    responseLine[WorkerProtocol.Prefix.Length..], NeedleJsonContext.Default.WorkerResponse)
                 ?? throw new NeedleWorkerException("Needle worker returned an empty protocol response.");
             if (response.ProtocolVersion != WorkerProtocol.Version)
                 throw new NeedleWorkerException($"Needle worker response uses protocol {response.ProtocolVersion}; expected {WorkerProtocol.Version}.");
@@ -120,9 +146,13 @@ internal sealed class NeedleWorkerProcess : IAsyncDisposable
             if (typeof(T) == typeof(JsonElement)) return (T)(object)(response.Payload ?? default(JsonElement));
             if (response.Payload is not { } responsePayload)
                 throw new NeedleWorkerException($"Needle worker returned no {typeof(T).Name} payload.");
-            var value = responsePayload.Deserialize<T>(NeedleProtocol.Json);
-            if (value is null) throw new NeedleWorkerException($"Needle worker returned no {typeof(T).Name} payload.");
-            return value;
+            if (typeof(T) == typeof(WorkerHandshake))
+                return (T)(object)(responsePayload.Deserialize(NeedleJsonContext.Default.WorkerHandshake)
+                    ?? throw new NeedleWorkerException("Needle worker returned no handshake payload."));
+            if (typeof(T) == typeof(ToolCallCompilation))
+                return (T)(object)(responsePayload.Deserialize(NeedleJsonContext.Default.ToolCallCompilation)
+                    ?? throw new NeedleWorkerException("Needle worker returned no compilation payload."));
+            throw new NeedleWorkerException($"Needle worker returned an unexpected {typeof(T).Name} payload.");
         }
         catch (OperationCanceledException)
         {
@@ -158,7 +188,7 @@ internal sealed class NeedleWorkerProcess : IAsyncDisposable
     private void Kill()
     {
         try { if (!_process.HasExited) _process.Kill(entireProcessTree: true); }
-        catch (InvalidOperationException) { }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or PlatformNotSupportedException) { }
     }
 
     public ValueTask DisposeAsync()
@@ -187,10 +217,12 @@ internal sealed class NeedleWorkerProcess : IAsyncDisposable
             {
                 try
                 {
-                    var request = JsonSerializer.Serialize(new WorkerRequest { Id = "shutdown", Operation = "shutdown" }, NeedleProtocol.Json);
-                    await _process.StandardInput.WriteLineAsync(request).ConfigureAwait(false);
-                    await _process.StandardInput.FlushAsync().ConfigureAwait(false);
+                    var request = JsonSerializer.Serialize(
+                        new WorkerRequest { Id = "shutdown", Operation = "shutdown" },
+                        NeedleJsonContext.Default.WorkerRequest);
                     using var timeout = new CancellationTokenSource(_options.ShutdownTimeout);
+                    await _process.StandardInput.WriteLineAsync(request).WaitAsync(timeout.Token).ConfigureAwait(false);
+                    await _process.StandardInput.FlushAsync().WaitAsync(timeout.Token).ConfigureAwait(false);
                     await _process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { Kill(); }

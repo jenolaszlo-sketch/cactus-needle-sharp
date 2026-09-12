@@ -5,11 +5,13 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CactusNeedleSharp;
 
+/// <summary>Pools out-of-process workers, bounding live processes and queueing excess session requests.</summary>
 public sealed class NeedleWorkerPool : INeedleWorkerPool
 {
     private readonly NeedleWorkerPoolOptions _options;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _leases;
+    private readonly SemaphoreSlim _startGate = new(1, 1);
     private readonly ConcurrentBag<NeedleWorkerProcess> _idle = [];
     private readonly ConcurrentDictionary<NeedleWorkerProcess, byte> _workers = [];
     private readonly CancellationTokenSource _shutdown = new();
@@ -18,11 +20,16 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
     private int _disposed;
     private int _waiting;
 
+    /// <summary>Gets the maximum number of live worker processes.</summary>
     public int MaximumWorkers => _options.MaximumWorkers;
+    /// <summary>Gets the current number of live worker processes.</summary>
     public int WorkerCount => _workers.Count;
+    /// <summary>Gets the number of idle reusable workers.</summary>
     public int IdleWorkerCount => _idle.Count;
+    /// <summary>Gets the number of session requests waiting for a worker.</summary>
     public int WaitingSessionCount => Volatile.Read(ref _waiting);
 
+    /// <summary>Initializes the pool and validates worker limits and timeouts.</summary>
     public NeedleWorkerPool(NeedleWorkerPoolOptions options, ILoggerFactory? loggerFactory = null)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -33,21 +40,27 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
             options.IdleWorkerTimeout is { } idleTimeout && idleTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(options), "Optional worker timeouts must be positive.");
         if (options.MaximumQueueLength < 0) throw new ArgumentOutOfRangeException(nameof(options.MaximumQueueLength));
-        if (options.MaximumProtocolMessageLength < 1024) throw new ArgumentOutOfRangeException(nameof(options.MaximumProtocolMessageLength));
+        if (options.MaximumProtocolMessageLength < 1024 || options.MaximumProtocolMessageLength > 16 * 1024 * 1024) throw new ArgumentOutOfRangeException(nameof(options.MaximumProtocolMessageLength));
         _options = options;
         _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<NeedleWorkerPool>();
         _leases = new(options.MaximumWorkers, options.MaximumWorkers);
     }
 
+    /// <summary>Starts workers so at least <paramref name="workerCount"/> are ready, without exceeding the maximum.</summary>
     public async ValueTask WarmAsync(int workerCount, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         if (workerCount < 0 || workerCount > MaximumWorkers) throw new ArgumentOutOfRangeException(nameof(workerCount));
+        // Take-or-start decisions hold the start gate so a warming start and
+        // a session-creating start cannot interleave past MaximumWorkers.
         while (_workers.Count < workerCount)
         {
             await _leases.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try { await _startGate.WaitAsync(cancellationToken).ConfigureAwait(false); }
+            catch { _leases.Release(); throw; }
             try
             {
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
                 if (_workers.Count >= workerCount) return;
                 var worker = await NeedleWorkerProcess.StartAsync(_options, _logger, cancellationToken).ConfigureAwait(false);
                 if (_workers.TryAdd(worker, 0))
@@ -57,10 +70,11 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
                 }
                 else await worker.DisposeAsync().ConfigureAwait(false);
             }
-            finally { _leases.Release(); }
+            finally { _startGate.Release(); _leases.Release(); }
         }
     }
 
+    /// <summary>Creates a session on a pooled worker, reusing idle workers or queueing up to the configured limits.</summary>
     public async ValueTask<INeedleSession> CreateSessionAsync(IReadOnlyList<NeedleTool> tools,
         NeedleSessionOptions? options = null, CancellationToken cancellationToken = default)
     {
@@ -88,6 +102,8 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
         NeedleDiagnostics.QueueDuration.Record(Stopwatch.GetElapsedTime(queueStarted).TotalMilliseconds);
         if (Volatile.Read(ref _disposed) != 0) { _leases.Release(); throw new ObjectDisposedException(nameof(NeedleWorkerPool)); }
         NeedleWorkerProcess? worker = null;
+        try { await _startGate.WaitAsync(cancellationToken).ConfigureAwait(false); }
+        catch { _leases.Release(); throw; }
         try
         {
             while (_idle.TryTake(out var candidate))
@@ -110,13 +126,32 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
                 _workers.TryAdd(worker, 0);
                 NeedleDiagnostics.WorkersStarted.Add(1);
             }
+            return await StartSessionAsync(worker, tools, options, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (worker is not null) await RemoveAndDisposeAsync(worker).ConfigureAwait(false);
+            _leases.Release();
+            throw;
+        }
+        finally { _startGate.Release(); }
+    }
+
+    private async ValueTask<INeedleSession> StartSessionAsync(
+        NeedleWorkerProcess worker,
+        IReadOnlyList<NeedleTool> tools,
+        NeedleSessionOptions? options,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
             await worker.InitializeAsync(tools, options, cancellationToken).ConfigureAwait(false);
             var customWeights = !string.IsNullOrWhiteSpace(options?.WeightsPath ?? _options.Runtime.ModelPath);
             return new NeedleWorkerSession(this, worker, tools.ToArray(), customWeights);
         }
         catch
         {
-            if (worker is not null) await RemoveAndDisposeAsync(worker).ConfigureAwait(false);
+            await RemoveAndDisposeAsync(worker).ConfigureAwait(false);
             _leases.Release();
             throw;
         }
@@ -148,6 +183,7 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
         await worker.DisposeAsync().ConfigureAwait(false);
     }
 
+    /// <summary>Shuts down all workers and releases pool resources.</summary>
     public ValueTask DisposeAsync()
     {
         lock (_disposeSync) return new(_disposeTask ??= DisposeCoreAsync());

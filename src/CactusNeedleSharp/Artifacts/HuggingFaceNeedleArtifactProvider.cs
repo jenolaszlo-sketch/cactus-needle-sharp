@@ -5,10 +5,13 @@ using System.Text.Json;
 
 namespace CactusNeedleSharp;
 
+/// <summary>Resolves the official Needle runtime from explicit paths, cache, or Hugging Face downloads.</summary>
 public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
 {
+    /// <summary>Gets the pinned Needle engine version this provider installs.</summary>
     public const string EngineVersion = "2.0.3";
     private const string Repository = "Cactus-Compute/needle2";
+    private const long MaxUnverifiedWheelBytes = 256L * 1024 * 1024;
     private readonly NeedleOptions _options;
     private readonly HttpClient _httpClient;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -23,9 +26,11 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
             ["win_arm64"] = new(13_268_140, "cadcd8ff7f18b47046c547cbc450dabe607c197db2855eb6497d615ff551db0f")
         };
 
+    /// <summary>Initializes the provider with options and an optional shared HTTP client.</summary>
     public HuggingFaceNeedleArtifactProvider(NeedleOptions? options = null, HttpClient? httpClient = null)
     { _options = options ?? new(); _httpClient = httpClient ?? new HttpClient(); }
 
+    /// <summary>Returns cached or downloaded artifacts, honoring explicit paths, offline mode, and integrity checks.</summary>
     public async ValueTask<NeedleArtifacts> GetArtifactsAsync(CancellationToken cancellationToken = default)
     {
         var explicitPath = _options.NativeLibraryPath ?? Environment.GetEnvironmentVariable("NEEDLE_LIB_PATH");
@@ -57,6 +62,8 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
                 return new(libraryPath, EngineVersion, Repository);
             var url = $"https://huggingface.co/{Repository}/resolve/main/python/{wheel}?download=true";
             var temporary = Path.Combine(cache, $".{wheel}.{Guid.NewGuid():N}.tmp");
+            string? extracted = null;
+            string? manifestTemporary = null;
             try
             {
                 using (var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false))
@@ -64,7 +71,20 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
                     response.EnsureSuccessStatusCode();
                     await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                     await using var destination = new FileStream(temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 81920, FileOptions.Asynchronous);
-                    await source.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
+                    // Enforce the size cap while streaming so a hostile origin
+                    // cannot fill the disk before the post-download check.
+                    var limit = _options.VerifyArtifactIntegrity ? descriptor.Size : MaxUnverifiedWheelBytes;
+                    var buffer = new byte[81920];
+                    long received = 0;
+                    while (true)
+                    {
+                        var read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                        if (read == 0) break;
+                        received += read;
+                        if (received > limit)
+                            throw new NeedleArtifactException($"Needle runtime download exceeded {limit} bytes.");
+                        await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                    }
                 }
                 if (_options.VerifyArtifactIntegrity)
                 {
@@ -75,19 +95,26 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
                 }
                 using var archive = ZipFile.OpenRead(temporary);
                 var entry = archive.GetEntry($"needle/{libraryName}") ?? throw new NeedleArtifactException($"Official wheel did not contain needle/{libraryName}.");
-                var extracted = libraryPath + $".{Guid.NewGuid():N}.tmp";
+                extracted = libraryPath + $".{Guid.NewGuid():N}.tmp";
                 entry.ExtractToFile(extracted);
                 var nativeSha256 = await ComputeSha256Async(extracted, cancellationToken).ConfigureAwait(false);
                 File.Move(extracted, libraryPath, true);
+                extracted = null;
                 ExtractUpstreamNotices(archive, cache);
                 var manifest = new ArtifactManifest(EngineVersion, wheel, descriptor.Sha256, nativeSha256, url);
-                var manifestTemporary = manifestPath + $".{Guid.NewGuid():N}.tmp";
-                await File.WriteAllTextAsync(manifestTemporary, JsonSerializer.Serialize(manifest, NeedleProtocol.Json), cancellationToken).ConfigureAwait(false);
+                manifestTemporary = manifestPath + $".{Guid.NewGuid():N}.tmp";
+                await File.WriteAllTextAsync(manifestTemporary, JsonSerializer.Serialize(manifest, NeedleJsonContext.Default.ArtifactManifest), cancellationToken).ConfigureAwait(false);
                 File.Move(manifestTemporary, manifestPath, true);
+                manifestTemporary = null;
             }
             catch (NeedleArtifactException) { throw; }
             catch (Exception exception) { throw new NeedleArtifactException("Failed to download the official Needle runtime artifact.", exception); }
-            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+            finally
+            {
+                if (File.Exists(temporary)) File.Delete(temporary);
+                if (extracted is not null && File.Exists(extracted)) File.Delete(extracted);
+                if (manifestTemporary is not null && File.Exists(manifestTemporary)) File.Delete(manifestTemporary);
+            }
             return new(libraryPath, EngineVersion, Repository);
         }
         finally { _gate.Release(); }
@@ -101,7 +128,7 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
         try
         {
             var json = await File.ReadAllTextAsync(manifestPath, cancellationToken).ConfigureAwait(false);
-            var manifest = JsonSerializer.Deserialize<ArtifactManifest>(json, NeedleProtocol.Json);
+            var manifest = JsonSerializer.Deserialize(json, NeedleJsonContext.Default.ArtifactManifest);
             if (manifest is null || manifest.Version != EngineVersion || manifest.WheelFile != wheel ||
                 !string.Equals(manifest.WheelSha256, descriptor.Sha256, StringComparison.OrdinalIgnoreCase)) return false;
             var actual = await ComputeSha256Async(libraryPath, cancellationToken).ConfigureAwait(false);
@@ -176,10 +203,14 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
 internal sealed record ArtifactDescriptor(long Size, string Sha256);
 internal sealed record ArtifactManifest(string Version, string WheelFile, string WheelSha256, string NativeLibrarySha256, string SourceUrl);
 
+/// <summary>Ensures the Needle runtime is available via the configured artifact provider.</summary>
 public sealed class NeedleModelManager
 {
     private readonly INeedleArtifactProvider _provider;
+    /// <summary>Initializes the manager with the underlying artifact provider.</summary>
     public NeedleModelManager(INeedleArtifactProvider provider) => _provider = provider;
+    /// <summary>Returns the resolved native artifacts.</summary>
     public ValueTask<NeedleArtifacts> GetArtifactsAsync(CancellationToken cancellationToken = default) => _provider.GetArtifactsAsync(cancellationToken);
+    /// <summary>Ensures the runtime is downloaded and verified, returning the resolved artifacts.</summary>
     public ValueTask<NeedleArtifacts> EnsureAvailableAsync(CancellationToken cancellationToken = default) => _provider.GetArtifactsAsync(cancellationToken);
 }

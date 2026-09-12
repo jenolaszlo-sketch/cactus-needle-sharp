@@ -6,6 +6,7 @@ namespace CactusNeedleSharp;
 internal static partial class NeedleNative
 {
     internal const string LibraryName = "CactusNeedleSharp.Native";
+    private static readonly object _sync = new();
     private static IntPtr _handle;
     private static string? _loadedPath;
 
@@ -14,14 +15,17 @@ internal static partial class NeedleNative
     internal static void Load(string path)
     {
         var fullPath = Path.GetFullPath(path);
-        if (_handle != IntPtr.Zero)
+        lock (_sync)
         {
-            if (!string.Equals(_loadedPath, fullPath, StringComparison.OrdinalIgnoreCase))
-                throw new NeedleNativeLibraryException($"Needle is already loaded from '{_loadedPath}' and cannot be rebound in this process to '{fullPath}'. Use an isolated worker process for another runtime.");
-            return;
+            if (_handle != IntPtr.Zero)
+            {
+                if (!string.Equals(_loadedPath, fullPath, StringComparison.OrdinalIgnoreCase))
+                    throw new NeedleNativeLibraryException($"Needle is already loaded from '{_loadedPath}' and cannot be rebound in this process to '{fullPath}'. Use an isolated worker process for another runtime.");
+                return;
+            }
+            try { _handle = NativeLibrary.Load(fullPath); _loadedPath = fullPath; }
+            catch (Exception exception) { throw new NeedleNativeLibraryException($"Unable to load the Needle runtime at '{path}'.", exception); }
         }
-        try { _handle = NativeLibrary.Load(fullPath); _loadedPath = fullPath; }
-        catch (Exception exception) { throw new NeedleNativeLibraryException($"Unable to load the Needle runtime at '{path}'.", exception); }
     }
 
     private static IntPtr Resolve(string name, Assembly assembly, DllImportSearchPath? path) =>

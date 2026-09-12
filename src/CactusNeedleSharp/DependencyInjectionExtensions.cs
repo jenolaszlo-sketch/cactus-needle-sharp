@@ -3,8 +3,10 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace CactusNeedleSharp;
 
+/// <summary>Registers Needle client and worker-pool services.</summary>
 public static class DependencyInjectionExtensions
 {
+    /// <summary>Registers Needle options, artifacts, model manager, and client factory as singletons.</summary>
     public static IServiceCollection AddCactusNeedleSharp(this IServiceCollection services, NeedleOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -17,6 +19,7 @@ public static class DependencyInjectionExtensions
         return services;
     }
 
+    /// <summary>Registers a singleton <see cref="INeedleWorkerPool"/> built from <paramref name="options"/>.</summary>
     public static IServiceCollection AddCactusNeedleSharpWorkerPool(this IServiceCollection services,
         NeedleWorkerPoolOptions options)
     {
