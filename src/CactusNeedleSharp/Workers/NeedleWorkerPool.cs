@@ -11,6 +11,7 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
     private readonly NeedleWorkerPoolOptions _options;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _leases;
+    private readonly SemaphoreSlim _startGate = new(1, 1);
     private readonly ConcurrentBag<NeedleWorkerProcess> _idle = [];
     private readonly ConcurrentDictionary<NeedleWorkerProcess, byte> _workers = [];
     private readonly CancellationTokenSource _shutdown = new();
@@ -50,13 +51,13 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         if (workerCount < 0 || workerCount > MaximumWorkers) throw new ArgumentOutOfRangeException(nameof(workerCount));
-        // Every live worker is backed by exactly one lease unit, so warmed
-        // idle workers retain theirs: concurrent warming and session creation
-        // can never exceed MaximumWorkers live processes.
+        // Take-or-start decisions hold the start gate so a warming start and
+        // a session-creating start cannot interleave past MaximumWorkers.
         while (_workers.Count < workerCount)
         {
             await _leases.WaitAsync(cancellationToken).ConfigureAwait(false);
-            var retained = false;
+            try { await _startGate.WaitAsync(cancellationToken).ConfigureAwait(false); }
+            catch { _leases.Release(); throw; }
             try
             {
                 ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -66,11 +67,10 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
                 {
                     _idle.Add(worker);
                     NeedleDiagnostics.WorkersStarted.Add(1);
-                    retained = true;
                 }
                 else await worker.DisposeAsync().ConfigureAwait(false);
             }
-            finally { if (!retained) _leases.Release(); }
+            finally { _startGate.Release(); _leases.Release(); }
         }
     }
 
@@ -81,9 +81,6 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         ArgumentNullException.ThrowIfNull(tools);
         if (tools.Count == 0) throw new NeedleSchemaException("At least one tool is required.");
-        // Fast path: a warmed idle worker transfers its retained lease backing.
-        var warmed = await TryTakeHealthyWorkerAsync(cancellationToken).ConfigureAwait(false);
-        if (warmed is not null) return await StartSessionAsync(warmed, tools, options, cancellationToken).ConfigureAwait(false);
         var queueStarted = Stopwatch.GetTimestamp();
         if (!_leases.Wait(0))
         {
@@ -105,16 +102,22 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
         NeedleDiagnostics.QueueDuration.Record(Stopwatch.GetElapsedTime(queueStarted).TotalMilliseconds);
         if (Volatile.Read(ref _disposed) != 0) { _leases.Release(); throw new ObjectDisposedException(nameof(NeedleWorkerPool)); }
         NeedleWorkerProcess? worker = null;
+        try { await _startGate.WaitAsync(cancellationToken).ConfigureAwait(false); }
+        catch { _leases.Release(); throw; }
         try
         {
-            worker = await TryTakeHealthyWorkerAsync(cancellationToken).ConfigureAwait(false);
-            if (worker is not null)
+            while (_idle.TryTake(out var candidate))
             {
-                // The idle worker brings its own retained backing; the waited
-                // lease is surplus.
-                _leases.Release();
+                var expired = _options.IdleWorkerTimeout is { } idleTimeout && DateTimeOffset.UtcNow - candidate.LastUsedAt >= idleTimeout;
+                if (candidate.IsHealthy && !expired)
+                {
+                    worker = candidate;
+                    NeedleDiagnostics.WorkersReused.Add(1);
+                    break;
+                }
+                await RemoveAndDisposeAsync(candidate).ConfigureAwait(false);
             }
-            else
+            if (worker is null)
             {
                 if (_options.AdmissionCheck is { } admission &&
                     !await admission(new(_workers.Count, _idle.Count, WaitingSessionCount, MaximumWorkers), cancellationToken).ConfigureAwait(false))
@@ -131,24 +134,7 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
             _leases.Release();
             throw;
         }
-    }
-
-    private async ValueTask<NeedleWorkerProcess?> TryTakeHealthyWorkerAsync(CancellationToken cancellationToken)
-    {
-        while (_idle.TryTake(out var candidate))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var expired = _options.IdleWorkerTimeout is { } idleTimeout && DateTimeOffset.UtcNow - candidate.LastUsedAt >= idleTimeout;
-            if (candidate.IsHealthy && !expired)
-            {
-                NeedleDiagnostics.WorkersReused.Add(1);
-                return candidate;
-            }
-            await RemoveAndDisposeAsync(candidate).ConfigureAwait(false);
-            _leases.Release();
-        }
-
-        return null;
+        finally { _startGate.Release(); }
     }
 
     private async ValueTask<INeedleSession> StartSessionAsync(
@@ -173,9 +159,6 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
 
     internal async ValueTask ReturnAsync(NeedleWorkerProcess worker, bool reusable)
     {
-        // A reused worker keeps its lease backing in the idle stock; only a
-        // discarded worker releases it.
-        var retained = false;
         try
         {
             if (Volatile.Read(ref _disposed) == 0 && reusable && worker.IsHealthy)
@@ -184,13 +167,13 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
                 {
                     using var timeout = new CancellationTokenSource(_options.ShutdownTimeout);
                     await worker.CloseSessionAsync(timeout.Token).ConfigureAwait(false);
-                    if (worker.IsHealthy) { _idle.Add(worker); retained = true; return; }
+                    if (worker.IsHealthy) { _idle.Add(worker); return; }
                 }
                 catch (Exception exception) { _logger.LogWarning(exception, "Discarding unhealthy Needle worker {ProcessId}.", worker.ProcessId); }
             }
             await RemoveAndDisposeAsync(worker).ConfigureAwait(false);
         }
-        finally { if (!retained) _leases.Release(); }
+        finally { _leases.Release(); }
     }
 
     private async ValueTask RemoveAndDisposeAsync(NeedleWorkerProcess worker)
