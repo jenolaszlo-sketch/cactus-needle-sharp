@@ -6,7 +6,8 @@ return await WorkerHost.RunAsync();
 internal static class WorkerHost
 {
     private static readonly int MaximumRequestLength =
-        int.TryParse(Environment.GetEnvironmentVariable("CACTUSNEEDLE_MAX_PROTOCOL_MESSAGE_LENGTH"), out var configured) && configured >= 1024
+        int.TryParse(Environment.GetEnvironmentVariable("CACTUSNEEDLE_MAX_PROTOCOL_MESSAGE_LENGTH"), out var configured) &&
+        configured >= 1024 && configured <= 16 * 1024 * 1024
             ? configured
             : 1024 * 1024;
 
@@ -75,7 +76,7 @@ internal static class WorkerHost
             if (session is not null) { await session.DisposeAsync().ConfigureAwait(false); session = null; }
             if (client is not null) { await client.DisposeAsync().ConfigureAwait(false); client = null; }
             client = await NeedleClient.CreateAsync(initialization.Runtime).ConfigureAwait(false);
-            session = await client.CreateAsync(initialization.Tools, initialization.Session).ConfigureAwait(false);
+            session = await client.CreateSessionAsync(initialization.Tools, initialization.Session).ConfigureAwait(false);
             return new { initialized = true };
         }
 

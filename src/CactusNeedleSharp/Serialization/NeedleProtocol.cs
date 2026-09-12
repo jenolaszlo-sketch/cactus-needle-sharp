@@ -20,8 +20,12 @@ internal static class NeedleProtocol
             {
                 Success = response.Success,
                 Calls = response.FunctionCalls?.Select(c => new NeedleToolCall { Name = c.Name ?? string.Empty, Arguments = c.Arguments.Clone() }).ToArray() ?? [],
-                Confidence = response.Confidence, Reasoning = response.Reasoning, Error = response.Error,
-                ErrorCode = response.ErrorCode, PrefillTokensPerSecond = response.PrefillTps, DecodeTokensPerSecond = response.DecodeTps
+                Confidence = response.Confidence,
+                Reasoning = response.Reasoning,
+                Error = response.Error,
+                ErrorCode = response.ErrorCode,
+                PrefillTokensPerSecond = response.PrefillTps,
+                DecodeTokensPerSecond = response.DecodeTps
             };
         }
         catch (NeedleProtocolException) { throw; }

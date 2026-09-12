@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -6,6 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CactusNeedleSharp;
 
+/// <summary>In-process Needle client; sessions share one live runtime lease and custom weights are a one-way door.</summary>
 public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleSessionFactory, IStructuredExtractor, IAsyncDisposable
 {
     private static readonly SemaphoreSlim RuntimeLease = new(1, 1);
@@ -15,6 +17,7 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
     private readonly ILogger _logger;
     private bool _disposed;
 
+    /// <summary>Gets wrapper, runtime, and model version information.</summary>
     public NeedleRuntimeInfo RuntimeInfo { get; }
 
     private NeedleClient(NeedleOptions options, INeedleArtifactProvider artifacts, NeedleArtifacts resolved, ILogger logger)
@@ -24,6 +27,7 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
         RuntimeInfo = new() { WrapperVersion = typeof(NeedleClient).Assembly.GetName().Version?.ToString(), RuntimeVersion = resolved.Version, ModelVersion = "needle2", ModelSource = resolved.Source };
     }
 
+    /// <summary>Resolves artifacts and creates an initialized client.</summary>
     public static async ValueTask<NeedleClient> CreateAsync(NeedleOptions? options = null,
         INeedleArtifactProvider? artifactProvider = null, ILoggerFactory? loggerFactory = null,
         CancellationToken cancellationToken = default)
@@ -35,14 +39,16 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
         return new(options, artifactProvider, artifacts, (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<NeedleClient>());
     }
 
+    /// <summary>Compiles <paramref name="input"/> using a short-lived session over <paramref name="tools"/>.</summary>
     public async ValueTask<ToolCallCompilation> CompileAsync(string input, IReadOnlyList<NeedleTool> tools,
         NeedleCompilationOptions? options = null, CancellationToken cancellationToken = default)
     {
-        await using var session = await CreateAsync(tools, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await using var session = await CreateSessionAsync(tools, cancellationToken: cancellationToken).ConfigureAwait(false);
         return await session.CompleteAsync(input, options, cancellationToken).ConfigureAwait(false);
     }
 
-    public async ValueTask<INeedleSession> CreateAsync(IReadOnlyList<NeedleTool> tools,
+    /// <summary>Creates a session holding the single live in-process lease; custom weights cannot later revert to base weights.</summary>
+    public async ValueTask<INeedleSession> CreateSessionAsync(IReadOnlyList<NeedleTool> tools,
         NeedleSessionOptions? options = null, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -77,6 +83,13 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
         catch { RuntimeLease.Release(); throw; }
     }
 
+    /// <summary>Obsolete shim that forwards to <see cref="CreateSessionAsync"/>.</summary>
+    [Obsolete("Use CreateSessionAsync, which states what is created.")]
+    public ValueTask<INeedleSession> CreateAsync(IReadOnlyList<NeedleTool> tools,
+        NeedleSessionOptions? options = null, CancellationToken cancellationToken = default) =>
+        CreateSessionAsync(tools, options, cancellationToken);
+
+    /// <summary>Extracts a value of type <typeparamref name="T"/> by compiling against a synthesized extraction tool.</summary>
     public async ValueTask<NeedleExtractionResult<T>> ExtractAsync<T>(string input,
         NeedleExtractionOptions? options = null, CancellationToken cancellationToken = default)
     {
@@ -91,20 +104,36 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
         return new() { Success = compilation.Success, Value = value, Confidence = compilation.Confidence, Error = compilation.Error, Compilation = compilation };
     }
 
+    private const long MaxWeightsBytes = 32L * 1024 * 1024 * 1024;
+
     private static unsafe void LoadWeights(string path)
     {
         if (!File.Exists(path)) throw new NeedleArtifactNotFoundException($"Custom Needle weights were not found at '{path}'.");
+        if (new FileInfo(path).Length > MaxWeightsBytes)
+            throw new NeedleArtifactException($"Custom Needle weights exceed {MaxWeightsBytes} bytes.");
         var bytes = File.ReadAllBytes(path);
-        fixed (byte* pointer = bytes)
-        { var code = NeedleNative.LoadWeights(pointer, (ulong)bytes.LongLength); if (code != 0) throw new NeedleInitializationException($"needle_load failed with code {code}."); }
+        try
+        {
+            fixed (byte* pointer = bytes)
+            { var code = NeedleNative.LoadWeights(pointer, (ulong)bytes.LongLength); if (code != 0) throw new NeedleInitializationException($"needle_load failed with code {code}."); }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+        }
     }
 
     private static void Validate(NeedleOptions options)
     {
         if (options.ResponseBufferSize < 1024) throw new ArgumentOutOfRangeException(nameof(options.ResponseBufferSize));
         if (options.DefaultMaxNewTokens <= 0) throw new ArgumentOutOfRangeException(nameof(options.DefaultMaxNewTokens));
+        if (options.ExpectedNativeLibrarySha256 is not null &&
+            (options.ExpectedNativeLibrarySha256.Length != 64 ||
+             options.ExpectedNativeLibrarySha256.Any(character => !Uri.IsHexDigit(character))))
+            throw new ArgumentException("Expected SHA-256 must contain exactly 64 hexadecimal characters.", nameof(options.ExpectedNativeLibrarySha256));
     }
 
+    /// <summary>Marks the client as disposed; live sessions release the runtime lease on disposal.</summary>
     public ValueTask DisposeAsync() { _disposed = true; return ValueTask.CompletedTask; }
 }
 
@@ -115,7 +144,9 @@ internal sealed class NeedleSession : INeedleSession
     private readonly SemaphoreSlim _lease;
     private readonly SemaphoreSlim _flight = new(1, 1);
     private readonly bool _customWeights;
-    private bool _disposed;
+    private readonly object _disposeSync = new();
+    private Task? _disposeTask;
+    private int _disposed;
     public IReadOnlyList<NeedleTool> Tools { get; }
     public string SessionId { get; } = Guid.NewGuid().ToString("N");
 
@@ -125,7 +156,7 @@ internal sealed class NeedleSession : INeedleSession
     public async ValueTask<ToolCallCompilation> CompleteAsync(string input, NeedleCompilationOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(input);
         await _flight.WaitAsync(cancellationToken).ConfigureAwait(false);
         var stopwatch = Stopwatch.StartNew();
@@ -152,7 +183,7 @@ internal sealed class NeedleSession : INeedleSession
 
     public async ValueTask ResetAsync(CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         await _flight.WaitAsync(cancellationToken).ConfigureAwait(false);
         try { cancellationToken.ThrowIfCancellationRequested(); NeedleNative.Reset(); _logger.LogInformation("Needle session reset."); }
         finally { _flight.Release(); }
@@ -168,7 +199,14 @@ internal sealed class NeedleSession : INeedleSession
 
     public ValueTask DisposeAsync()
     {
-        if (!_disposed) { _disposed = true; _flight.Dispose(); _lease.Release(); }
-        return ValueTask.CompletedTask;
+        lock (_disposeSync) return new(_disposeTask ??= DisposeCoreAsync());
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        await _flight.WaitAsync().ConfigureAwait(false);
+        try { _lease.Release(); }
+        finally { _flight.Release(); _flight.Dispose(); }
     }
 }

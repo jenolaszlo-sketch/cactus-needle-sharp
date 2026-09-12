@@ -16,8 +16,24 @@ internal sealed class NeedleWorkerProcess : IAsyncDisposable
 
     internal DateTimeOffset LastUsedAt { get; private set; } = DateTimeOffset.UtcNow;
 
-    internal bool IsHealthy => Volatile.Read(ref _disposed) == 0 && !_process.HasExited;
-    internal int ProcessId => IsHealthy ? _process.Id : -1;
+    internal bool IsHealthy
+    {
+        get
+        {
+            if (Volatile.Read(ref _disposed) != 0) return false;
+            try { return !_process.HasExited; }
+            catch (Exception exception) when (exception is ObjectDisposedException or InvalidOperationException) { return false; }
+        }
+    }
+
+    internal int ProcessId
+    {
+        get
+        {
+            try { return IsHealthy ? _process.Id : -1; }
+            catch (Exception exception) when (exception is ObjectDisposedException or InvalidOperationException) { return -1; }
+        }
+    }
 
     private NeedleWorkerProcess(Process process, NeedleWorkerPoolOptions options, ILogger logger)
     { _process = process; _options = options; _logger = logger; }
@@ -158,7 +174,7 @@ internal sealed class NeedleWorkerProcess : IAsyncDisposable
     private void Kill()
     {
         try { if (!_process.HasExited) _process.Kill(entireProcessTree: true); }
-        catch (InvalidOperationException) { }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or PlatformNotSupportedException) { }
     }
 
     public ValueTask DisposeAsync()
@@ -188,9 +204,9 @@ internal sealed class NeedleWorkerProcess : IAsyncDisposable
                 try
                 {
                     var request = JsonSerializer.Serialize(new WorkerRequest { Id = "shutdown", Operation = "shutdown" }, NeedleProtocol.Json);
-                    await _process.StandardInput.WriteLineAsync(request).ConfigureAwait(false);
-                    await _process.StandardInput.FlushAsync().ConfigureAwait(false);
                     using var timeout = new CancellationTokenSource(_options.ShutdownTimeout);
+                    await _process.StandardInput.WriteLineAsync(request).WaitAsync(timeout.Token).ConfigureAwait(false);
+                    await _process.StandardInput.FlushAsync().WaitAsync(timeout.Token).ConfigureAwait(false);
                     await _process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { Kill(); }

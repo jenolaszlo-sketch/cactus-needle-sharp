@@ -59,7 +59,7 @@ Release packaging is audited in CI: the package license, README, license and not
 ## Sessions and extraction
 
 ```csharp
-await using var session = await needle.CreateAsync([weather]);
+await using var session = await needle.CreateSessionAsync([weather]);
 var first = await session.CompleteAsync("Weather in Budapest");
 var next = await session.CompleteAsync("{\"temperature_c\": 22}");
 await session.ResetAsync();

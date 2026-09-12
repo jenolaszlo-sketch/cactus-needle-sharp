@@ -2,8 +2,10 @@ using System.Text.Json;
 
 namespace CactusNeedleSharp;
 
+/// <summary>Provides helpers for deserializing tool-call arguments.</summary>
 public static class NeedleToolCallExtensions
 {
+    /// <summary>Deserializes a call's arguments as <typeparamref name="TArguments"/>.</summary>
     public static TArguments DeserializeArguments<TArguments>(this NeedleToolCall call,
         JsonSerializerOptions? serializerOptions = null)
     {
@@ -19,6 +21,7 @@ public static class NeedleToolCallExtensions
         }
     }
 
+    /// <summary>Tries to deserialize a call's arguments, returning false with an error instead of throwing.</summary>
     public static bool TryDeserializeArguments<TArguments>(this NeedleToolCall call,
         out TArguments? arguments, out string? error,
         JsonSerializerOptions? serializerOptions = null)
