@@ -52,6 +52,7 @@ internal static class WorkerHost
                             null => null,
                             JsonObject node => JsonSerializer.SerializeToElement(node, NeedleJsonContext.Default.JsonObject),
                             WorkerHandshake handshake => JsonSerializer.SerializeToElement(handshake, NeedleJsonContext.Default.WorkerHandshake),
+                            ToolCallCompilation compilation => JsonSerializer.SerializeToElement(compilation, NeedleJsonContext.Default.ToolCallCompilation),
                             _ => throw new NeedleWorkerException($"Worker response has an unsupported '{payload.GetType().Name}' payload.")
                         }
                     }).ConfigureAwait(false);

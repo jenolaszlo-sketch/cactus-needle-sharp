@@ -100,6 +100,30 @@ public sealed partial class NeedleToolTests
     private sealed record NestedArguments(string Name, SearchArguments Inner);
     private enum TaskPriority { Low, High }
 
+    [Fact]
+    public void WorkerCompilationPayloadRoundTripsThroughContext()
+    {
+        var compilation = new ToolCallCompilation
+        {
+            Success = true,
+            Calls = [new NeedleToolCall { Name = "search", Arguments = JsonDocument.Parse("{}").RootElement.Clone() }],
+            Confidence = .9
+        };
+        var response = new WorkerResponse
+        {
+            Id = "test",
+            Success = true,
+            Payload = JsonSerializer.SerializeToElement(compilation, NeedleJsonContext.Default.ToolCallCompilation)
+        };
+        var line = JsonSerializer.Serialize(response, NeedleJsonContext.Default.WorkerResponse);
+        var back = JsonSerializer.Deserialize(line, NeedleJsonContext.Default.WorkerResponse);
+        Assert.NotNull(back);
+        var payload = back.Payload!.Value.Deserialize(NeedleJsonContext.Default.ToolCallCompilation);
+        Assert.NotNull(payload);
+        Assert.True(payload.Success);
+        Assert.Equal("search", Assert.Single(payload.Calls).Name);
+    }
+
     [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
     [JsonSerializable(typeof(SearchArguments))]
     [JsonSerializable(typeof(NestedArguments))]
