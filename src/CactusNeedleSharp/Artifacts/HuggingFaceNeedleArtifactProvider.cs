@@ -103,7 +103,7 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
                 ExtractUpstreamNotices(archive, cache);
                 var manifest = new ArtifactManifest(EngineVersion, wheel, descriptor.Sha256, nativeSha256, url);
                 manifestTemporary = manifestPath + $".{Guid.NewGuid():N}.tmp";
-                await File.WriteAllTextAsync(manifestTemporary, JsonSerializer.Serialize(manifest, NeedleProtocol.Json), cancellationToken).ConfigureAwait(false);
+                await File.WriteAllTextAsync(manifestTemporary, JsonSerializer.Serialize(manifest, NeedleJsonContext.Default.ArtifactManifest), cancellationToken).ConfigureAwait(false);
                 File.Move(manifestTemporary, manifestPath, true);
                 manifestTemporary = null;
             }
@@ -128,7 +128,7 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
         try
         {
             var json = await File.ReadAllTextAsync(manifestPath, cancellationToken).ConfigureAwait(false);
-            var manifest = JsonSerializer.Deserialize<ArtifactManifest>(json, NeedleProtocol.Json);
+            var manifest = JsonSerializer.Deserialize(json, NeedleJsonContext.Default.ArtifactManifest);
             if (manifest is null || manifest.Version != EngineVersion || manifest.WheelFile != wheel ||
                 !string.Equals(manifest.WheelSha256, descriptor.Sha256, StringComparison.OrdinalIgnoreCase)) return false;
             var actual = await ComputeSha256Async(libraryPath, cancellationToken).ConfigureAwait(false);

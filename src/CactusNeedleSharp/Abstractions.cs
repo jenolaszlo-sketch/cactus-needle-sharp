@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 
 namespace CactusNeedleSharp;
@@ -30,6 +31,8 @@ public interface INeedleClientFactory
 public interface IStructuredExtractor
 {
     /// <summary>Extracts a value of type <typeparamref name="T"/> from <paramref name="input"/>.</summary>
+    [RequiresUnreferencedCode("Extraction reflects over the result type. Use the JsonTypeInfo overload for trimmed hosts.")]
+    [RequiresDynamicCode("Extraction reflects over the result type. Use the JsonTypeInfo overload for NativeAOT hosts.")]
     ValueTask<NeedleExtractionResult<T>> ExtractAsync<T>(string input,
         NeedleExtractionOptions? options = null, CancellationToken cancellationToken = default);
 }

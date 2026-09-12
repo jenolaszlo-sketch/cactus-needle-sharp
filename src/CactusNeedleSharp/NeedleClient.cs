@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -90,6 +92,8 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
         CreateSessionAsync(tools, options, cancellationToken);
 
     /// <summary>Extracts a value of type <typeparamref name="T"/> by compiling against a synthesized extraction tool.</summary>
+    [RequiresUnreferencedCode("Extraction reflects over the result type. Use the JsonTypeInfo overload for trimmed hosts.")]
+    [RequiresDynamicCode("Extraction reflects over the result type. Use the JsonTypeInfo overload for NativeAOT hosts.")]
     public async ValueTask<NeedleExtractionResult<T>> ExtractAsync<T>(string input,
         NeedleExtractionOptions? options = null, CancellationToken cancellationToken = default)
     {
@@ -99,6 +103,23 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
         if (compilation.Success && compilation.Calls.Count != 0)
         {
             try { value = compilation.Calls[0].Arguments.Deserialize<T>(NeedleProtocol.Json); }
+            catch (JsonException exception) { throw new NeedleProtocolException($"Needle output could not be deserialized as {typeof(T).Name}.", exception); }
+        }
+        return new() { Success = compilation.Success, Value = value, Confidence = compilation.Confidence, Error = compilation.Error, Compilation = compilation };
+    }
+
+    /// <summary>Extracts a record using serializer metadata instead of reflection.</summary>
+    public async ValueTask<NeedleExtractionResult<T>> ExtractAsync<T>(string input,
+        JsonTypeInfo<T> typeInfo,
+        NeedleExtractionOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(typeInfo);
+        var tool = NeedleTool.FromType(typeof(T).Name, typeInfo, options?.Description ?? $"Extract a {typeof(T).Name} record from text");
+        var compilation = await CompileAsync(input, [tool], new() { MaxNewTokens = options?.MaxNewTokens }, cancellationToken).ConfigureAwait(false);
+        T? value = default;
+        if (compilation.Success && compilation.Calls.Count != 0)
+        {
+            try { value = compilation.Calls[0].Arguments.Deserialize(typeInfo); }
             catch (JsonException exception) { throw new NeedleProtocolException($"Needle output could not be deserialized as {typeof(T).Name}.", exception); }
         }
         return new() { Success = compilation.Success, Value = value, Confidence = compilation.Confidence, Error = compilation.Error, Compilation = compilation };

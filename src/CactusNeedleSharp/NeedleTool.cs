@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json.Serialization.Metadata;
 
 namespace CactusNeedleSharp;
 
@@ -41,9 +42,17 @@ public record NeedleTool
     }
 
     /// <summary>Generates a tool whose parameter schema is derived from <typeparamref name="TArguments"/>.</summary>
+    [RequiresUnreferencedCode("Schema generation reflects over the argument type. Use the JsonTypeInfo overload for trimmed hosts.")]
+    [RequiresDynamicCode("Schema generation reflects over the argument type. Use the JsonTypeInfo overload for NativeAOT hosts.")]
     public static NeedleTool<TArguments> FromType<TArguments>(string name, string? description = null,
         JsonSerializerOptions? serializerOptions = null) =>
         new(name, description, JsonSchemaGenerator.Generate(typeof(TArguments), serializerOptions));
+
+    /// <summary>Creates a tool from serializer metadata instead of reflection.</summary>
+    public static NeedleTool<TArguments> FromType<TArguments>(string name,
+        JsonTypeInfo<TArguments> typeInfo, string? description = null,
+        Func<Type, JsonTypeInfo?>? nested = null) =>
+        new(name, description, JsonSchemaGenerator.Generate(typeInfo, nested));
 
     private static void Validate(string name, JsonElement schema)
     {
@@ -61,6 +70,12 @@ public sealed record NeedleTool<TArguments> : NeedleTool
     { Name = name; Description = description; Parameters = parameters.Clone(); }
 
     /// <summary>Deserializes a call's arguments as this tool's argument type.</summary>
+    [RequiresUnreferencedCode("Argument deserialization reflects over the argument type. Use the JsonTypeInfo overload for trimmed hosts.")]
+    [RequiresDynamicCode("Argument deserialization reflects over the argument type. Use the JsonTypeInfo overload for NativeAOT hosts.")]
     public TArguments DeserializeCallArguments(NeedleToolCall call, JsonSerializerOptions? serializerOptions = null) =>
         call.DeserializeArguments<TArguments>(serializerOptions);
+
+    /// <summary>Deserializes a call's arguments from serializer metadata instead of reflection.</summary>
+    public TArguments DeserializeCallArguments(NeedleToolCall call, JsonTypeInfo<TArguments> typeInfo) =>
+        call.DeserializeArguments(typeInfo);
 }
