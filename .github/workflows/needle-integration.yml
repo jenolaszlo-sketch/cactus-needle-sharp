@@ -9,6 +9,13 @@ on:
       - ".github/workflows/needle-integration.yml"
       - "Directory.Build.props"
       - "global.json"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/CactusNeedleSharp.IntegrationTests/**"
+      - ".github/workflows/needle-integration.yml"
+      - "Directory.Build.props"
+      - "global.json"
   schedule:
     - cron: "23 5 * * 1"
   workflow_dispatch:
