@@ -50,7 +50,7 @@ if (result.IsConfident(0.80))
         Console.WriteLine($"{call.Name}: {call.Arguments}");
 ```
 
-The first call downloads the third-party Needle 2 platform runtime from the official Cactus Compute distribution into a separate local cache. The runtime wheel size and SHA-256 are pinned, and a manifest protects subsequent offline reuse. The runtime is not embedded in the NuGet package. Set `Offline = true` after the artifact is present, or provide `NativeLibraryPath`/upstream `NEEDLE_LIB_PATH` for air-gapped use. No telemetry is collected.
+The first call downloads the third-party Needle 2 platform runtime from the official Cactus Compute distribution into a separate local cache. The runtime wheel size and SHA-256 are pinned, and a manifest protects subsequent offline reuse. The runtime is not embedded in the NuGet package. Set `Offline = true` after the artifact is present, or provide `NativeLibraryPath`/upstream `NEEDLE_LIB_PATH` for air-gapped use. Set `ExplicitNativeLibraryVersion` when you know the version of a custom library; otherwise runtime reporting uses `unknown` instead of assuming the bundled version. No telemetry is collected.
 
 Model-dependent tests are isolated in `CactusNeedleSharp.IntegrationTests` and run only when `NEEDLE_RUN_INTEGRATION_TESTS=1`; ordinary unit tests never download artifacts. BenchmarkDotNet benchmarks are kept separate from tests so cold initialization is not reported as warm inference throughput.
 
@@ -86,6 +86,10 @@ await pool.WarmAsync(2);
 
 await using var conversation = await pool.CreateSessionAsync(tools);
 var decision = await conversation.CompleteAsync(userIntent);
+
+// The pool implements the same one-shot contracts as NeedleClient.
+IToolCallCompiler isolated = pool;
+var oneShot = await isolated.CompileAsync(userIntent, tools);
 ```
 
 Worker auto-discovery checks the application directory; `WorkerPath` remains available for explicit deployment and local-tool configurations. Reference the `CactusNeedleSharp.Worker` project, deploy its build output alongside the application, or install the `CactusNeedleSharp.Worker` local .NET tool. See [conversation-isolated worker pools](docs/worker-pool.md).
@@ -101,6 +105,14 @@ var arguments = result.Calls[0].DeserializeArguments<WeatherArguments>();
 ```
 
 Outcomes distinguish `Success`, `NoCall`, `LowConfidence`, and `Failed`; typed argument deserialization reports a `NeedleProtocolException` instead of leaking raw JSON errors.
+
+`IsConfident` and `GetOutcome` apply the same threshold rule: a missing model confidence is treated as low confidence, and thresholds must be finite values from `0` through `1`. Per-call `MaxNewTokens` overrides must be positive. Typed tools retain the serializer contract used to generate their schema, and calls are checked against the typed tool name before deserialization.
+
+Generated schemas follow the selected `System.Text.Json` contract, including resolved property names, ignored members, enum representation, and string-keyed dictionaries as JSON objects. Typed extraction also accepts `JsonTypeInfo<T>` through `IStructuredExtractor`; set `NeedleExtractionOptions.NestedTypeResolver` when that schema references other source-generated types. Tools and native text are validated before a request crosses the native or worker boundary; duplicate tool names and embedded NUL characters are rejected.
+
+Worker pools apply admission checks to both demand-driven creation and `WarmAsync`. Pool disposal waits for an in-progress worker start and rejects a worker that loses the shutdown race, while failed initialization returns its capacity exactly once. The pool uses a bounded queue and lazily expires idle workers when they are checked out.
+
+To run the ordinary test suite, use `dotnet test CactusNeedleSharp.slnx --no-restore`. The integration tests are intentionally skipped unless `NEEDLE_RUN_INTEGRATION_TESTS=1`; when enabled, set `NEEDLE_EXPECTED_ARCHITECTURE`, `NEEDLE_TEST_CACHE_DIRECTORY`, and (for the pool test) `NEEDLE_WORKER_PATH` as described by the test project.
 
 ## Add tools to a text-only model
 

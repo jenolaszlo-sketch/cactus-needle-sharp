@@ -26,9 +26,14 @@ public static class DependencyInjectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
         services.TryAddSingleton(options);
-        services.TryAddSingleton<INeedleWorkerPool>(provider => new NeedleWorkerPool(
+        services.TryAddSingleton<NeedleWorkerPool>(provider => new NeedleWorkerPool(
             provider.GetRequiredService<NeedleWorkerPoolOptions>(),
             provider.GetService<Microsoft.Extensions.Logging.ILoggerFactory>()));
+        services.TryAddSingleton<INeedleWorkerPool>(provider => provider.GetRequiredService<NeedleWorkerPool>());
+        services.TryAddSingleton<INeedleSessionFactory>(provider => provider.GetRequiredService<NeedleWorkerPool>());
+        services.TryAddSingleton<IToolCallCompiler>(provider => provider.GetRequiredService<NeedleWorkerPool>());
+        services.TryAddSingleton<IToolCallPlanner>(provider => provider.GetRequiredService<NeedleWorkerPool>());
+        services.TryAddSingleton<IStructuredExtractor>(provider => provider.GetRequiredService<NeedleWorkerPool>());
         return services;
     }
 }

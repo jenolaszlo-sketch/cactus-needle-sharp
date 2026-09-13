@@ -52,7 +52,7 @@ public static class NeedleWorkerLocator
 }
 
 /// <summary>Manages a pool of out-of-process worker sessions.</summary>
-public interface INeedleWorkerPool : IAsyncDisposable
+public interface INeedleWorkerPool : INeedleSessionFactory, IToolCallPlanner, IStructuredExtractor, IAsyncDisposable
 {
     /// <summary>Gets the maximum number of live worker processes.</summary>
     int MaximumWorkers { get; }
@@ -64,11 +64,6 @@ public interface INeedleWorkerPool : IAsyncDisposable
     int WaitingSessionCount { get; }
     /// <summary>Starts workers so at least <paramref name="workerCount"/> are ready.</summary>
     ValueTask WarmAsync(int workerCount, CancellationToken cancellationToken = default);
-    /// <summary>Creates a session on a pooled worker, waiting up to the configured queue timeout for capacity.</summary>
-    ValueTask<INeedleSession> CreateSessionAsync(
-        IReadOnlyList<NeedleTool> tools,
-        NeedleSessionOptions? options = null,
-        CancellationToken cancellationToken = default);
 }
 
 /// <summary>Thrown when worker creation, queuing, or admission control fails.</summary>

@@ -57,4 +57,54 @@ public sealed class ArtifactTests
         }
         finally { File.Delete(path); }
     }
+
+    [Fact]
+    public async Task DownloadCancellationRemainsCancellation()
+    {
+        var cache = Path.Combine(Path.GetTempPath(), "needle-tests", Guid.NewGuid().ToString("N"));
+        using var client = new HttpClient(new CancelHandler());
+        using var provider = new HuggingFaceNeedleArtifactProvider(new() { CacheDirectory = cache }, client);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => provider.GetArtifactsAsync().AsTask());
+    }
+
+    [Fact]
+    public async Task ExplicitLibraryVersionIsCallerSuppliedRatherThanAssumed()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            using var unknownProvider = new HuggingFaceNeedleArtifactProvider(new()
+            {
+                NativeLibraryPath = path,
+                VerifyArtifactIntegrity = false
+            });
+            Assert.Equal("unknown", (await unknownProvider.GetArtifactsAsync()).Version);
+
+            using var labelledProvider = new HuggingFaceNeedleArtifactProvider(new()
+            {
+                NativeLibraryPath = path,
+                ExplicitNativeLibraryVersion = "custom-7",
+                VerifyArtifactIntegrity = false
+            });
+            Assert.Equal("custom-7", (await labelledProvider.GetArtifactsAsync()).Version);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task ArtifactProviderDisposalIsIdempotentAndTerminal()
+    {
+        var provider = new HuggingFaceNeedleArtifactProvider(new() { Offline = true });
+
+        provider.Dispose();
+        provider.Dispose();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => provider.GetArtifactsAsync().AsTask());
+    }
+
+    private sealed class CancelHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromCanceled<HttpResponseMessage>(new CancellationToken(true));
+    }
 }

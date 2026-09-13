@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization.Metadata;
+
 namespace CactusNeedleSharp;
 
 /// <summary>Configures artifact resolution and inference defaults for <see cref="NeedleClient"/>.</summary>
@@ -7,6 +9,8 @@ public sealed record NeedleOptions
     public string? CacheDirectory { get; init; }
     /// <summary>Gets an explicit native library path that bypasses download and caching.</summary>
     public string? NativeLibraryPath { get; init; }
+    /// <summary>Gets the caller-supplied version label for an explicit native library; defaults to unknown.</summary>
+    public string? ExplicitNativeLibraryVersion { get; init; }
     /// <summary>Gets the default custom weights path used when a session does not specify one.</summary>
     public string? ModelPath { get; init; }
     /// <summary>Gets whether network downloads are forbidden; requires an integrity-verified cached runtime.</summary>
@@ -50,6 +54,8 @@ public sealed record NeedleExtractionOptions
     public int? MaxNewTokens { get; init; }
     /// <summary>Gets the description used for the synthesized extraction tool.</summary>
     public string? Description { get; init; }
+    /// <summary>Gets metadata for nested types referenced by source-generated extraction schemas.</summary>
+    public Func<Type, JsonTypeInfo?>? NestedTypeResolver { get; init; }
 }
 
 /// <summary>Defines the minimum confidence required for a successful outcome.</summary>

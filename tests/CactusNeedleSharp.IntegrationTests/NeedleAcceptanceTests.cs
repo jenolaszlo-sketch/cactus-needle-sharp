@@ -6,11 +6,10 @@ namespace CactusNeedleSharp.IntegrationTests;
 
 public sealed class NeedleAcceptanceTests
 {
-    [Fact]
+    [NeedleIntegrationFact]
     [Trait("Category", "NeedleIntegration")]
     public async Task CompilesRepositorySearchCall()
     {
-        Assert.Equal("1", Environment.GetEnvironmentVariable("NEEDLE_RUN_INTEGRATION_TESTS"));
         var expectedArchitecture = Environment.GetEnvironmentVariable("NEEDLE_EXPECTED_ARCHITECTURE");
         Assert.True(Enum.TryParse<Architecture>(expectedArchitecture, true, out var architecture));
         Assert.Equal(architecture, RuntimeInformation.ProcessArchitecture);
@@ -33,11 +32,10 @@ public sealed class NeedleAcceptanceTests
         Assert.NotEmpty(offlineResult.Calls);
     }
 
-    [Fact]
+    [NeedleIntegrationFact]
     [Trait("Category", "NeedleIntegration")]
     public async Task PoolBoundsAndIsolatesConcurrentConversations()
     {
-        Assert.Equal("1", Environment.GetEnvironmentVariable("NEEDLE_RUN_INTEGRATION_TESTS"));
         var workerPath = Environment.GetEnvironmentVariable("NEEDLE_WORKER_PATH");
         Assert.True(File.Exists(workerPath), $"Set NEEDLE_WORKER_PATH to the built worker executable or DLL. Received '{workerPath}'.");
         var cacheDirectory = Environment.GetEnvironmentVariable("NEEDLE_TEST_CACHE_DIRECTORY")
@@ -69,5 +67,15 @@ public sealed class NeedleAcceptanceTests
         Assert.Equal(2, pool.WorkerCount);
         var reused = await sessionC.CompleteAsync("Search for JsonRepair usages");
         Assert.Equal("search_repository", Assert.Single(reused.Calls).Name);
+    }
+
+}
+
+internal sealed class NeedleIntegrationFactAttribute : FactAttribute
+{
+    public NeedleIntegrationFactAttribute()
+    {
+        if (!string.Equals(Environment.GetEnvironmentVariable("NEEDLE_RUN_INTEGRATION_TESTS"), "1", StringComparison.Ordinal))
+            Skip = "Set NEEDLE_RUN_INTEGRATION_TESTS=1 to run model-dependent integration tests.";
     }
 }

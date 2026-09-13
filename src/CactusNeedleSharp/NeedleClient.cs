@@ -16,15 +16,17 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
     private static string? LoadedWeightsPath;
     private readonly NeedleOptions _options;
     private readonly INeedleArtifactProvider _artifacts;
+    private readonly bool _ownsArtifacts;
     private readonly ILogger _logger;
-    private bool _disposed;
+    private int _disposed;
 
     /// <summary>Gets wrapper, runtime, and model version information.</summary>
     public NeedleRuntimeInfo RuntimeInfo { get; }
 
-    private NeedleClient(NeedleOptions options, INeedleArtifactProvider artifacts, NeedleArtifacts resolved, ILogger logger)
+    private NeedleClient(NeedleOptions options, INeedleArtifactProvider artifacts, bool ownsArtifacts,
+        NeedleArtifacts resolved, ILogger logger)
     {
-        _options = options; _artifacts = artifacts; _logger = logger;
+        _options = options; _artifacts = artifacts; _ownsArtifacts = ownsArtifacts; _logger = logger;
         NeedleNative.Load(resolved.NativeLibraryPath);
         RuntimeInfo = new() { WrapperVersion = typeof(NeedleClient).Assembly.GetName().Version?.ToString(), RuntimeVersion = resolved.Version, ModelVersion = "needle2", ModelSource = resolved.Source };
     }
@@ -36,15 +38,28 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
     {
         options ??= new();
         Validate(options);
+        var ownsArtifacts = artifactProvider is null;
         artifactProvider ??= new HuggingFaceNeedleArtifactProvider(options);
-        var artifacts = await artifactProvider.GetArtifactsAsync(cancellationToken).ConfigureAwait(false);
-        return new(options, artifactProvider, artifacts, (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<NeedleClient>());
+        try
+        {
+            var artifacts = await artifactProvider.GetArtifactsAsync(cancellationToken).ConfigureAwait(false);
+            return new(options, artifactProvider, ownsArtifacts, artifacts,
+                (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<NeedleClient>());
+        }
+        catch
+        {
+            if (ownsArtifacts && artifactProvider is IDisposable disposable) disposable.Dispose();
+            throw;
+        }
     }
 
     /// <summary>Compiles <paramref name="input"/> using a short-lived session over <paramref name="tools"/>.</summary>
     public async ValueTask<ToolCallCompilation> CompileAsync(string input, IReadOnlyList<NeedleTool> tools,
         NeedleCompilationOptions? options = null, CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(input);
+        NeedleValidation.NativeText(input, nameof(input));
+        NeedleValidation.CompilationOptions(options);
         await using var session = await CreateSessionAsync(tools, cancellationToken: cancellationToken).ConfigureAwait(false);
         return await session.CompleteAsync(input, options, cancellationToken).ConfigureAwait(false);
     }
@@ -53,12 +68,13 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
     public async ValueTask<INeedleSession> CreateSessionAsync(IReadOnlyList<NeedleTool> tools,
         NeedleSessionOptions? options = null, CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentNullException.ThrowIfNull(tools);
-        if (tools.Count == 0) throw new NeedleSchemaException("At least one tool is required.");
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        var toolSnapshot = NeedleValidation.Tools(tools);
+        NeedleValidation.SessionOptions(options, _options);
         await RuntimeLease.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             var resolved = await _artifacts.GetArtifactsAsync(cancellationToken).ConfigureAwait(false);
             NeedleNative.Load(resolved.NativeLibraryPath);
             var weights = options?.WeightsPath ?? _options.ModelPath;
@@ -77,10 +93,10 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
                 throw new NeedleInitializationException($"Custom weights '{LoadedWeightsPath}' are already loaded and the native runtime cannot return to base weights. Use a separate worker process for base-model sessions.");
             }
             var facts = options?.SystemFacts ?? options?.Facts?.ToString();
-            var result = NeedleNative.Init(facts, NeedleProtocol.SerializeTools(tools), options?.ToolIndexPath ?? _options.ToolIndexPath);
+            var result = NeedleNative.Init(facts, NeedleProtocol.SerializeTools(toolSnapshot), options?.ToolIndexPath ?? _options.ToolIndexPath);
             if (result < 0) throw new NeedleInitializationException($"needle_init failed with code {result}.");
-            _logger.LogInformation("Needle session created with {ToolCount} tools.", tools.Count);
-            return new NeedleSession(tools.ToArray(), _options, _logger, RuntimeLease, customWeights);
+            _logger.LogInformation("Needle session created with {ToolCount} tools.", toolSnapshot.Length);
+            return new NeedleSession(toolSnapshot, _options, _logger, RuntimeLease, customWeights);
         }
         catch { RuntimeLease.Release(); throw; }
     }
@@ -99,13 +115,7 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
     {
         var tool = NeedleTool.FromType<T>("extract", options?.Description ?? $"Extract a {typeof(T).Name} record from text");
         var compilation = await CompileAsync(input, [tool], new() { MaxNewTokens = options?.MaxNewTokens }, cancellationToken).ConfigureAwait(false);
-        T? value = default;
-        if (compilation.Success && compilation.Calls.Count != 0)
-        {
-            try { value = compilation.Calls[0].Arguments.Deserialize<T>(NeedleProtocol.Json); }
-            catch (JsonException exception) { throw new NeedleProtocolException($"Needle output could not be deserialized as {typeof(T).Name}.", exception); }
-        }
-        return new() { Success = compilation.Success, Value = value, Confidence = compilation.Confidence, Error = compilation.Error, Compilation = compilation };
+        return NeedleExtractionResults.Create(compilation, "extract", arguments => arguments.Deserialize<T>(NeedleProtocol.Json), typeof(T).Name);
     }
 
     /// <summary>Extracts a record using serializer metadata instead of reflection.</summary>
@@ -114,15 +124,10 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
         NeedleExtractionOptions? options = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(typeInfo);
-        var tool = NeedleTool.FromType(typeof(T).Name, typeInfo, options?.Description ?? $"Extract a {typeof(T).Name} record from text");
+        var tool = NeedleTool.FromType("extract", typeInfo, options?.Description ?? $"Extract a {typeof(T).Name} record from text",
+            options?.NestedTypeResolver);
         var compilation = await CompileAsync(input, [tool], new() { MaxNewTokens = options?.MaxNewTokens }, cancellationToken).ConfigureAwait(false);
-        T? value = default;
-        if (compilation.Success && compilation.Calls.Count != 0)
-        {
-            try { value = compilation.Calls[0].Arguments.Deserialize(typeInfo); }
-            catch (JsonException exception) { throw new NeedleProtocolException($"Needle output could not be deserialized as {typeof(T).Name}.", exception); }
-        }
-        return new() { Success = compilation.Success, Value = value, Confidence = compilation.Confidence, Error = compilation.Error, Compilation = compilation };
+        return NeedleExtractionResults.Create(compilation, "extract", arguments => arguments.Deserialize(typeInfo), typeof(T).Name);
     }
 
     private const long MaxWeightsBytes = 32L * 1024 * 1024 * 1024;
@@ -155,7 +160,12 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
     }
 
     /// <summary>Marks the client as disposed; live sessions release the runtime lease on disposal.</summary>
-    public ValueTask DisposeAsync() { _disposed = true; return ValueTask.CompletedTask; }
+    public ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) == 0 && _ownsArtifacts && _artifacts is IDisposable disposable)
+            disposable.Dispose();
+        return ValueTask.CompletedTask;
+    }
 }
 
 internal sealed class NeedleSession : INeedleSession
@@ -179,6 +189,8 @@ internal sealed class NeedleSession : INeedleSession
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(input);
+        NeedleValidation.NativeText(input, nameof(input));
+        NeedleValidation.CompilationOptions(options);
         await _flight.WaitAsync(cancellationToken).ConfigureAwait(false);
         var stopwatch = Stopwatch.StartNew();
         using var activity = NeedleDiagnostics.Activities.StartActivity("needle.inference");
@@ -206,7 +218,7 @@ internal sealed class NeedleSession : INeedleSession
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         await _flight.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try { cancellationToken.ThrowIfCancellationRequested(); NeedleNative.Reset(); _logger.LogInformation("Needle session reset."); }
+        try { ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this); cancellationToken.ThrowIfCancellationRequested(); NeedleNative.Reset(); _logger.LogInformation("Needle session reset."); }
         finally { _flight.Release(); }
     }
 

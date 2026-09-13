@@ -6,7 +6,7 @@ using System.Text.Json;
 namespace CactusNeedleSharp;
 
 /// <summary>Resolves the official Needle runtime from explicit paths, cache, or Hugging Face downloads.</summary>
-public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
+public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider, IDisposable
 {
     /// <summary>Gets the pinned Needle engine version this provider installs.</summary>
     public const string EngineVersion = "2.0.3";
@@ -14,7 +14,9 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
     private const long MaxUnverifiedWheelBytes = 256L * 1024 * 1024;
     private readonly NeedleOptions _options;
     private readonly HttpClient _httpClient;
+    private readonly bool _ownsHttpClient;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private int _disposed;
     private static readonly IReadOnlyDictionary<string, ArtifactDescriptor> Artifacts =
         new Dictionary<string, ArtifactDescriptor>(StringComparer.Ordinal)
         {
@@ -28,21 +30,25 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
 
     /// <summary>Initializes the provider with options and an optional shared HTTP client.</summary>
     public HuggingFaceNeedleArtifactProvider(NeedleOptions? options = null, HttpClient? httpClient = null)
-    { _options = options ?? new(); _httpClient = httpClient ?? new HttpClient(); }
+    { _options = options ?? new(); _ownsHttpClient = httpClient is null; _httpClient = httpClient ?? new HttpClient(); }
 
     /// <summary>Returns cached or downloaded artifacts, honoring explicit paths, offline mode, and integrity checks.</summary>
     public async ValueTask<NeedleArtifacts> GetArtifactsAsync(CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         var explicitPath = _options.NativeLibraryPath ?? Environment.GetEnvironmentVariable("NEEDLE_LIB_PATH");
         if (!string.IsNullOrWhiteSpace(explicitPath))
         {
             if (!File.Exists(explicitPath)) throw new NeedleArtifactNotFoundException($"Needle native library was not found at '{explicitPath}'.");
             if (_options.VerifyArtifactIntegrity && !string.IsNullOrWhiteSpace(_options.ExpectedNativeLibrarySha256))
                 await VerifyFileAsync(explicitPath, _options.ExpectedNativeLibrarySha256, cancellationToken).ConfigureAwait(false);
-            return new(Path.GetFullPath(explicitPath), EngineVersion, "explicit");
+            var explicitVersion = string.IsNullOrWhiteSpace(_options.ExplicitNativeLibraryVersion)
+                ? "unknown"
+                : _options.ExplicitNativeLibraryVersion;
+            return new(Path.GetFullPath(explicitPath), explicitVersion, "explicit");
         }
 
-        var cache = _options.CacheDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CactusNeedleSharp", EngineVersion);
+        var cache = Path.GetFullPath(_options.CacheDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CactusNeedleSharp", EngineVersion));
         var libraryName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "libneedle.dll" : RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "libneedle.dylib" : "libneedle.so";
         var libraryPath = Path.Combine(cache, libraryName);
         var tag = GetPythonPlatformTag();
@@ -107,6 +113,7 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
                 File.Move(manifestTemporary, manifestPath, true);
                 manifestTemporary = null;
             }
+            catch (OperationCanceledException) { throw; }
             catch (NeedleArtifactException) { throw; }
             catch (Exception exception) { throw new NeedleArtifactException("Failed to download the official Needle runtime artifact.", exception); }
             finally
@@ -164,11 +171,21 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
                 return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None,
                     bufferSize: 1, FileOptions.Asynchronous);
             }
-            catch (IOException)
+            catch (IOException exception) when (IsLockContention(exception))
             {
                 await Task.Delay(100, cancellationToken).ConfigureAwait(false);
             }
         }
+    }
+
+    private static bool IsLockContention(IOException exception) =>
+        exception.HResult == unchecked((int)0x80070020) || exception.HResult == unchecked((int)0x80070021);
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _gate.Dispose();
+        if (_ownsHttpClient) _httpClient.Dispose();
     }
 
     internal static void ExtractUpstreamNotices(ZipArchive archive, string cacheDirectory)
@@ -193,6 +210,8 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider
     internal static string GetPythonPlatformTag()
     {
         var arm64 = RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
+        var x64 = RuntimeInformation.ProcessArchitecture == Architecture.X64;
+        if (!arm64 && !x64) throw new NeedleArtifactException($"Unsupported process architecture: {RuntimeInformation.ProcessArchitecture}.");
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return arm64 ? "win_arm64" : "win_amd64";
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX)) return arm64 ? "macosx_11_0_arm64" : "macosx_11_0_x86_64";
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) return arm64 ? "manylinux2014_aarch64" : "manylinux2014_x86_64";

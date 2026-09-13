@@ -80,13 +80,24 @@ internal sealed class NeedleWorkerProcess : IAsyncDisposable
     }
 
     internal async ValueTask InitializeAsync(IReadOnlyList<NeedleTool> tools, NeedleSessionOptions? session,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken)
+    {
+        NeedleValidation.SessionOptions(session, _options.Runtime);
         _ = await SendAsync<JsonElement>("initialize", new WorkerInitializePayload
         { Runtime = _options.Runtime, Tools = tools.ToArray(), Session = session }, cancellationToken).ConfigureAwait(false);
+    }
 
     internal ValueTask<ToolCallCompilation> CompleteAsync(string input, NeedleCompilationOptions? options,
         CancellationToken cancellationToken) =>
-        SendAsync<ToolCallCompilation>("complete", new WorkerCompletePayload { Input = input, Options = options }, cancellationToken);
+        CompleteValidatedAsync(input, options, cancellationToken);
+
+    private ValueTask<ToolCallCompilation> CompleteValidatedAsync(string input, NeedleCompilationOptions? options, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(input);
+        NeedleValidation.NativeText(input, nameof(input));
+        NeedleValidation.CompilationOptions(options);
+        return SendAsync<ToolCallCompilation>("complete", new WorkerCompletePayload { Input = input, Options = options }, cancellationToken);
+    }
 
     internal async ValueTask ResetAsync(CancellationToken cancellationToken) =>
         _ = await SendAsync<JsonElement>("reset", null, cancellationToken).ConfigureAwait(false);

@@ -120,6 +120,108 @@ public sealed class WorkerPoolTests
         await second.DisposeAsync();
     }
 
+    [Fact]
+    public async Task SessionFactoryOneShotCompilationWorksWithPool()
+    {
+        await using var pool = CreatePool();
+        IToolCallCompiler compiler = pool;
+
+        var result = await compiler.CompileAsync("ok", [Tool]);
+
+        Assert.True(result.Success);
+        Assert.Equal("test", Assert.Single(result.Calls).Name);
+        Assert.Equal(1, pool.IdleWorkerCount);
+    }
+
+    [Fact]
+    public async Task InvalidSessionTextIsRejectedBeforeStartingWorker()
+    {
+        await using var pool = CreatePool();
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            pool.CreateSessionAsync([Tool], new() { SystemFacts = "bad\0facts" }).AsTask());
+
+        Assert.Equal(0, pool.WorkerCount);
+    }
+
+    [Fact]
+    public async Task InitializationFailureReleasesExactlyOneLease()
+    {
+        await using var pool = CreatePool(new() { MaximumWorkers = 1, MaximumProtocolMessageLength = 1024 });
+        var facts = new NeedleSessionOptions { SystemFacts = new string('x', 4_000) };
+        await Assert.ThrowsAsync<NeedleWorkerException>(() => pool.CreateSessionAsync([Tool], facts).AsTask());
+
+        await using var replacement = await pool.CreateSessionAsync([Tool]);
+        Assert.True((await replacement.CompleteAsync("ok")).Success);
+    }
+
+    [Fact]
+    public async Task DisposalClosesAdmissionCreationRace()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var pool = CreatePool(new()
+        {
+            AdmissionCheck = async (_, cancellationToken) =>
+            {
+                entered.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return true;
+            }
+        });
+        var creating = pool.CreateSessionAsync([Tool]).AsTask();
+        await entered.Task;
+        var disposing = pool.DisposeAsync().AsTask();
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => creating);
+        await disposing.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, pool.WorkerCount);
+    }
+
+    [Fact]
+    public async Task DisposalCancelsBlockedWarmup()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var pool = CreatePool(new()
+        {
+            AdmissionCheck = async (_, cancellationToken) =>
+            {
+                entered.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return true;
+            }
+        });
+        var warming = pool.WarmAsync(1).AsTask();
+        await entered.Task;
+
+        var disposing = pool.DisposeAsync().AsTask();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => warming);
+        await disposing.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, pool.WorkerCount);
+    }
+
+    [Fact]
+    public async Task CancelledAdmissionReturnsPoolCapacity()
+    {
+        var attempt = 0;
+        await using var pool = CreatePool(new()
+        {
+            MaximumWorkers = 1,
+            AdmissionCheck = async (_, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref attempt) == 1)
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return true;
+            }
+        });
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            pool.CreateSessionAsync([Tool], cancellationToken: cancellation.Token).AsTask());
+
+        await using var replacement = await pool.CreateSessionAsync([Tool]);
+        Assert.True((await replacement.CompleteAsync("ok")).Success);
+    }
+
     private static NeedleWorkerPool CreatePool(NeedleWorkerPoolOptions? overrides = null)
     {
         var defaults = overrides ?? new();

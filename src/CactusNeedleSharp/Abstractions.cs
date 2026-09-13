@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 namespace CactusNeedleSharp;
 
@@ -35,9 +36,13 @@ public interface IStructuredExtractor
     [RequiresDynamicCode("Extraction reflects over the result type. Use the JsonTypeInfo overload for NativeAOT hosts.")]
     ValueTask<NeedleExtractionResult<T>> ExtractAsync<T>(string input,
         NeedleExtractionOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Extracts a value using serializer metadata instead of reflection.</summary>
+    ValueTask<NeedleExtractionResult<T>> ExtractAsync<T>(string input, JsonTypeInfo<T> typeInfo,
+        NeedleExtractionOptions? options = null, CancellationToken cancellationToken = default);
 }
 
-/// <summary>Represents one live in-process session holding the exclusive native runtime lease.</summary>
+/// <summary>Represents one live Needle conversation session.</summary>
 public interface INeedleSession : IAsyncDisposable
 {
     /// <summary>Gets the unique identifier for this session.</summary>
@@ -51,10 +56,10 @@ public interface INeedleSession : IAsyncDisposable
     ValueTask ResetAsync(CancellationToken cancellationToken = default);
 }
 
-/// <summary>Creates <see cref="INeedleSession"/> instances.</summary>
+/// <summary>Creates <see cref="INeedleSession"/> instances for a Needle transport.</summary>
 public interface INeedleSessionFactory
 {
-    /// <summary>Creates a session over <paramref name="tools"/> and acquires the runtime lease.</summary>
+    /// <summary>Creates a session over <paramref name="tools"/> and acquires backend capacity.</summary>
     ValueTask<INeedleSession> CreateSessionAsync(IReadOnlyList<NeedleTool> tools,
         NeedleSessionOptions? options = null, CancellationToken cancellationToken = default);
 
@@ -92,16 +97,27 @@ public sealed record ToolCallCompilation
     /// <summary>Gets decode throughput in tokens per second, if reported.</summary>
     public double? DecodeTokensPerSecond { get; init; }
     /// <summary>Returns true when compilation succeeded with at least one call meeting <paramref name="threshold"/>.</summary>
-    public bool IsConfident(double threshold) => Success && Calls.Count > 0 && Confidence >= threshold;
+    public bool IsConfident(double threshold)
+    {
+        ValidateConfidence(threshold);
+        return Success && Calls.Count > 0 && Confidence is { } confidence && confidence >= threshold;
+    }
     /// <summary>Maps this result to a <see cref="NeedleCompilationOutcome"/> using <paramref name="policy"/>.</summary>
     public NeedleCompilationOutcome GetOutcome(NeedleConfidencePolicy? policy = null)
     {
+        var minimum = (policy ?? new()).MinimumConfidence;
+        ValidateConfidence(minimum);
         if (!Success) return NeedleCompilationOutcome.Failed;
         if (Calls.Count == 0) return NeedleCompilationOutcome.NoCall;
-        var minimum = (policy ?? new()).MinimumConfidence;
-        return Confidence is null || Confidence >= minimum
+        return Confidence is { } confidence && confidence >= minimum
             ? NeedleCompilationOutcome.Success
             : NeedleCompilationOutcome.LowConfidence;
+    }
+
+    private static void ValidateConfidence(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value) || value < 0 || value > 1)
+            throw new ArgumentOutOfRangeException(nameof(value), "Confidence thresholds must be finite and between 0 and 1.");
     }
 }
 
@@ -142,5 +158,10 @@ public sealed record NeedleExtractionResult<T>
     /// <summary>Gets the underlying tool-call compilation.</summary>
     public ToolCallCompilation Compilation { get; init; } = new() { Success = false };
     /// <summary>Maps the underlying compilation to a <see cref="NeedleCompilationOutcome"/> using <paramref name="policy"/>.</summary>
-    public NeedleCompilationOutcome GetOutcome(NeedleConfidencePolicy? policy = null) => Compilation.GetOutcome(policy);
+    public NeedleCompilationOutcome GetOutcome(NeedleConfidencePolicy? policy = null)
+    {
+        var compilationOutcome = Compilation.GetOutcome(policy);
+        if (compilationOutcome == NeedleCompilationOutcome.NoCall) return compilationOutcome;
+        return Success ? compilationOutcome : NeedleCompilationOutcome.Failed;
+    }
 }
