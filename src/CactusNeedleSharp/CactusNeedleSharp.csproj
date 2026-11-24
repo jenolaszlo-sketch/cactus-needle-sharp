@@ -2,7 +2,7 @@
   <PropertyGroup>
     <PackageId>CactusNeedleSharp</PackageId>
     <Title>CactusNeedleSharp</Title>
-    <Description>Unofficial .NET wrapper for Needle 2 by Cactus Compute, providing local schema-constrained tool calling and structured extraction.</Description>
+    <Description>Unofficial .NET wrapper for Needle 3 and Cactus 4, providing local schema-constrained tool proposals and structured extraction.</Description>
     <Authors>CactusNeedleSharp contributors</Authors>
     <PackageTags>needle;cactus;cactus-compute;llm;ai;tool-calling;function-calling;structured-output;json-schema;on-device;local-ai</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

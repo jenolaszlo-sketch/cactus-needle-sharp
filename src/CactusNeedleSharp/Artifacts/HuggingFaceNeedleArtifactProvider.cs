@@ -273,8 +273,9 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider,
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX)) return arm64 ? "macosx_11_0_arm64" : "macosx_11_0_x86_64";
         if (OperatingSystem.IsLinux() && !OperatingSystem.IsAndroid())
         {
+            const string maps = "/proc/self/maps";
             var family = RuntimeInformation.RuntimeIdentifier.StartsWith("linux-musl", StringComparison.Ordinal) ||
-                File.ReadLines("/proc/self/maps").Any(line => line.Contains("/ld-musl-", StringComparison.Ordinal))
+                (File.Exists(maps) && File.ReadLines(maps).Any(line => line.Contains("/ld-musl-", StringComparison.Ordinal)))
                 ? "musllinux_1_2_" : "manylinux2014_";
             return family + (arm64 ? "aarch64" : "x86_64");
         }

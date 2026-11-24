@@ -18,5 +18,10 @@ var results = await Task.WhenAll(
     conversationB.CompleteAsync("What is the weather in Manila?").AsTask());
 
 foreach (var result in results)
-    foreach (var call in result.Calls)
-        Console.WriteLine($"{call.Name}: {call.Arguments} (confidence {result.Confidence})");
+{
+    var outcome = result.GetOutcome();
+    Console.WriteLine($"Outcome: {outcome}. Confidence: {result.Confidence}");
+    if (outcome == NeedleCompilationOutcome.Success)
+        foreach (var call in result.Calls)
+            Console.WriteLine($"{call.Name}: {call.Arguments}");
+}

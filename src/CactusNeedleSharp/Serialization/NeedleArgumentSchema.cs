@@ -12,7 +12,7 @@ internal static class NeedleArgumentSchema
     internal static bool Matches(JsonElement value, JsonElement schema)
     {
         try { return MatchesCore(value, schema); }
-        catch (Exception error) when (error is InvalidOperationException or FormatException or ArgumentException or RegexMatchTimeoutException)
+        catch (Exception error) when (error is InvalidOperationException or FormatException or OverflowException or ArgumentException or RegexMatchTimeoutException)
         { return false; }
     }
 

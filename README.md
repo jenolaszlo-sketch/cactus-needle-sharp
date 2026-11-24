@@ -1,10 +1,10 @@
 # CactusNeedleSharp
 
-Unofficial .NET wrapper for Needle 2 by Cactus Compute.
+Unofficial .NET wrapper for Needle 3 by Cactus Compute.
 
 CactusNeedleSharp exposes Needle's local, schema-constrained tool calling and structured extraction capabilities to .NET applications.
 
-Needle 2 is developed by Cactus Compute. This project is an independent community integration and is not affiliated with, sponsored by, or endorsed by Cactus Compute.
+Needle 3 is developed by Cactus Compute. This project is an independent community integration and is not affiliated with, sponsored by, or endorsed by Cactus Compute.
 
 ```text
 User / LLM intent
@@ -50,9 +50,9 @@ if (result.IsConfident(0.80))
         Console.WriteLine($"{call.Name}: {call.Arguments}");
 ```
 
-The first call downloads the third-party Needle 2 platform runtime from the official Cactus Compute distribution into a separate local cache. The runtime wheel size and SHA-256 are pinned, and a manifest protects subsequent offline reuse. The runtime is not embedded in the NuGet package. Set `Offline = true` after the artifact is present, or provide `NativeLibraryPath`/upstream `NEEDLE_LIB_PATH` for air-gapped use. Set `ExplicitNativeLibraryVersion` when you know the version of a custom library; otherwise runtime reporting uses `unknown` instead of assuming the bundled version. No telemetry is collected.
+The default client downloads the pinned Cactus 4.1.4 shared library and Needle 3 weights into separate verified cache entries. Once both are present, set `Offline = true` for disconnected use. Air-gapped deployments can set `NativeLibraryPath` and `ModelPath` explicitly. See [native runtime and migration](docs/native-runtime.md) for integrity and version reporting.
 
-Model-dependent tests are isolated in `CactusNeedleSharp.IntegrationTests` and run only when `NEEDLE_RUN_INTEGRATION_TESTS=1`; ordinary unit tests never download artifacts. BenchmarkDotNet benchmarks are kept separate from tests so cold initialization is not reported as warm inference throughput.
+Native execution tests are opt-in. See [integration testing](docs/integration-testing.md) and the [qualification report](docs/needle3-qualification.md) for run instructions, platform evidence, and the Needle 2 comparison.
 
 Release packaging is audited in CI: the package license, README, license and notice files are verified, and packaging fails if model weights or native Needle runtime binaries enter the NuGet archive unexpectedly.
 
@@ -86,6 +86,7 @@ await pool.WarmAsync(2);
 
 await using var conversation = await pool.CreateSessionAsync(tools);
 var decision = await conversation.CompleteAsync(userIntent);
+await conversation.DisposeAsync();
 
 // The pool implements the same one-shot contracts as NeedleClient.
 IToolCallCompiler isolated = pool;
@@ -101,10 +102,14 @@ services.AddCactusNeedleSharp(new NeedleOptions { Offline = true });
 services.AddCactusNeedleSharpWorkerPool(new() { MaximumWorkers = 4 });
 
 var outcome = result.GetOutcome(new() { MinimumConfidence = .80 });
-var arguments = result.Calls[0].DeserializeArguments<WeatherArguments>();
+if (outcome == NeedleCompilationOutcome.Success)
+{
+    var arguments = result.Calls[0].DeserializeArguments<WeatherArguments>();
+    Console.WriteLine(arguments);
+}
 ```
 
-Outcomes distinguish `Success`, `NoCall`, `LowConfidence`, and `Failed`; typed argument deserialization reports a `NeedleProtocolException` instead of leaking raw JSON errors.
+Outcomes distinguish `Success`, `NoCall`, `LowConfidence`, `Suppressed`, and `Failed`. Read intent candidates through `Calls` only after a successful outcome. `SuppressedCalls`, `RejectedCalls`, and `Validation` carry diagnostic information.
 
 `IsConfident` and `GetOutcome` apply the same threshold rule: a missing model confidence is treated as low confidence, and thresholds must be finite values from `0` through `1`. Per-call `MaxNewTokens` overrides must be positive. Typed tools retain the serializer contract used to generate their schema, and calls are checked against the typed tool name before deserialization.
 
@@ -112,7 +117,7 @@ Generated schemas follow the selected `System.Text.Json` contract, including res
 
 Worker pools apply admission checks to both demand-driven creation and `WarmAsync`. Pool disposal waits for an in-progress worker start and rejects a worker that loses the shutdown race, while failed initialization returns its capacity exactly once. The pool uses a bounded queue and lazily expires idle workers when they are checked out.
 
-To run the ordinary test suite, use `dotnet test CactusNeedleSharp.slnx --no-restore`. The integration tests are intentionally skipped unless `NEEDLE_RUN_INTEGRATION_TESTS=1`; when enabled, set `NEEDLE_EXPECTED_ARCHITECTURE`, `NEEDLE_TEST_CACHE_DIRECTORY`, and (for the pool test) `NEEDLE_WORKER_PATH` as described by the test project.
+The .NET wrapper supports typed extraction through its own schema verifier. Upstream Python adds date grounding, repair, and extraction rules described in the [runtime investigation](docs/runtime-investigation.md).
 
 ## Add tools to a text-only model
 
@@ -134,20 +139,20 @@ The package never executes generated calls. **Schema validity != semantic correc
 
 ## Upstream project and attribution
 
-Needle 2 is developed by the Cactus Compute team.
+Needle 3 is developed by the Cactus Compute team.
 
 CactusNeedleSharp only provides the .NET integration layer. It does not claim authorship of the Needle model, model architecture, training work, model weights, or Cactus runtime.
 
 Please visit the upstream distributions for the authoritative documentation, models, licenses, research, authors, and academic citation:
 
-- [Cactus Compute Needle](https://github.com/cactus-compute/needle)
-- [Needle 2 model distribution](https://huggingface.co/Cactus-Compute/needle2)
+- [Cactus Compute Needle](https://github.com/cactus-compute/cactus/tree/v4.2.7)
+- [Needle 3 model distribution](https://huggingface.co/Cactus-Compute/needle3)
 
 ## License
 
 CactusNeedleSharp source code is licensed under the [Apache License 2.0](LICENSE).
 
-Needle 2, Cactus runtime components, model weights, and other upstream Cactus Compute artifacts retain their respective upstream licenses and copyright notices.
+Needle 3, Cactus runtime components, model weights, and other upstream Cactus Compute artifacts retain their respective upstream licenses and copyright notices.
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the official Cactus Compute distributions for details.
 
