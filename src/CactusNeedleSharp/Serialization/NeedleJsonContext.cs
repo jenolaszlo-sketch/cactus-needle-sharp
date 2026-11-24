@@ -19,7 +19,6 @@ namespace CactusNeedleSharp;
 [JsonSerializable(typeof(WorkerHandshake))]
 [JsonSerializable(typeof(WorkerInitializePayload))]
 [JsonSerializable(typeof(WorkerCompletePayload))]
-[JsonSerializable(typeof(ArtifactManifest))]
 [JsonSerializable(typeof(NeedleTool))]
 [JsonSerializable(typeof(List<NeedleTool>))]
 [JsonSerializable(typeof(ToolCallCompilation))]

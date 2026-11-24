@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -13,22 +14,43 @@ namespace CactusNeedleSharp;
 public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleSessionFactory, IStructuredExtractor, IAsyncDisposable
 {
     private static readonly SemaphoreSlim RuntimeLease = new(1, 1);
-    private static string? LoadedWeightsPath;
+    private static string? LoadedModelHash;
+    private static bool ModelLoadFailed;
     private readonly NeedleOptions _options;
-    private readonly INeedleArtifactProvider _artifacts;
-    private readonly bool _ownsArtifacts;
+    private readonly HuggingFaceNeedleArtifactProvider _models;
+    private readonly bool _ownsModels;
+    private readonly NeedleModelArtifact _defaultModel;
     private readonly ILogger _logger;
     private int _disposed;
 
-    /// <summary>Gets wrapper, runtime, and model version information.</summary>
+    /// <summary>Gets artifact metadata for the client's default model. Session overrides may select other weights.</summary>
     public NeedleRuntimeInfo RuntimeInfo { get; }
 
-    private NeedleClient(NeedleOptions options, INeedleArtifactProvider artifacts, bool ownsArtifacts,
-        NeedleArtifacts resolved, ILogger logger)
+    private NeedleClient(NeedleOptions options, HuggingFaceNeedleArtifactProvider models, bool ownsModels,
+        NeedleArtifacts engine, NeedleModelArtifact model, ILogger logger)
     {
-        _options = options; _artifacts = artifacts; _ownsArtifacts = ownsArtifacts; _logger = logger;
-        NeedleNative.Load(resolved.NativeLibraryPath);
-        RuntimeInfo = new() { WrapperVersion = typeof(NeedleClient).Assembly.GetName().Version?.ToString(), RuntimeVersion = resolved.Version, ModelVersion = "needle2", ModelSource = resolved.Source };
+        _options = options;
+        _models = models;
+        _ownsModels = ownsModels;
+        _defaultModel = model;
+        _logger = logger;
+        NeedleNative.Load(engine);
+        RuntimeInfo = new()
+        {
+            WrapperVersion = typeof(NeedleClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
+            RuntimeVersion = engine.Version,
+            RuntimeRevision = engine.Revision,
+            RuntimeSha256 = engine.Sha256,
+            RuntimeIntegrityVerified = engine.IntegrityVerified,
+            ModelVersion = "needle3",
+            ModelGeneration = 3,
+            ModelSource = model.Source,
+            ModelRevision = model.Revision,
+            ModelSha256 = model.Sha256,
+            ModelIntegrityVerified = model.IntegrityVerified,
+            HasConfidenceHead = model.HasConfidenceHead,
+            ConfidenceCalibrated = model.ConfidenceCalibrated
+        };
     }
 
     /// <summary>Resolves artifacts and creates an initialized client.</summary>
@@ -38,17 +60,19 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
     {
         options ??= new();
         Validate(options);
-        var ownsArtifacts = artifactProvider is null;
-        artifactProvider ??= new HuggingFaceNeedleArtifactProvider(options);
+        var models = artifactProvider as HuggingFaceNeedleArtifactProvider ?? new(options);
+        var ownsModels = !ReferenceEquals(artifactProvider, models);
         try
         {
-            var artifacts = await artifactProvider.GetArtifactsAsync(cancellationToken).ConfigureAwait(false);
-            return new(options, artifactProvider, ownsArtifacts, artifacts,
+            var engine = await (artifactProvider ?? models).GetArtifactsAsync(cancellationToken).ConfigureAwait(false);
+            var model = await models.GetModelArtifactsAsync(cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            return new(options, models, ownsModels, engine, model,
                 (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<NeedleClient>());
         }
         catch
         {
-            if (ownsArtifacts && artifactProvider is IDisposable disposable) disposable.Dispose();
+            if (ownsModels) models.Dispose();
             throw;
         }
     }
@@ -75,28 +99,35 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
         try
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            var resolved = await _artifacts.GetArtifactsAsync(cancellationToken).ConfigureAwait(false);
-            NeedleNative.Load(resolved.NativeLibraryPath);
-            var weights = options?.WeightsPath ?? _options.ModelPath;
-            var customWeights = !string.IsNullOrWhiteSpace(weights);
-            if (customWeights)
+            var model = options?.WeightsPath is { } path
+                ? await _models.GetModelArtifactsAsync(path, cancellationToken).ConfigureAwait(false)
+                : _defaultModel;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (ModelLoadFailed)
+                throw new NeedleInitializationException("A Cactus model load failed in this process. Create a fresh worker.");
+            if (LoadedModelHash is not null && LoadedModelHash != model.Sha256)
+                throw new NeedleInitializationException("Cactus already holds different weights in this process. Create a fresh worker for this model.");
+            NeedleNative.SetThreads(_options.Threads);
+            if (LoadedModelHash is null)
             {
-                var fullWeightsPath = Path.GetFullPath(weights!);
-                if (!string.Equals(LoadedWeightsPath, fullWeightsPath, StringComparison.OrdinalIgnoreCase))
-                {
-                    LoadWeights(fullWeightsPath);
-                    LoadedWeightsPath = fullWeightsPath;
-                }
-            }
-            else if (LoadedWeightsPath is not null)
-            {
-                throw new NeedleInitializationException($"Custom weights '{LoadedWeightsPath}' are already loaded and the native runtime cannot return to base weights. Use a separate worker process for base-model sessions.");
+                LoadWeights(model);
+                LoadedModelHash = model.Sha256;
             }
             var facts = options?.SystemFacts ?? options?.Facts?.ToString();
             var result = NeedleNative.Init(facts, NeedleProtocol.SerializeTools(toolSnapshot), options?.ToolIndexPath ?? _options.ToolIndexPath);
-            if (result < 0) throw new NeedleInitializationException($"needle_init failed with code {result}.");
+            if (result < 0)
+            {
+                var error = NeedleNative.LastError();
+                NeedleNative.Reset();
+                throw new NeedleInitializationException($"cactus_init failed with code {result}: {error}");
+            }
+            if (cancellationToken.IsCancellationRequested)
+            {
+                NeedleNative.Reset();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
             _logger.LogInformation("Needle session created with {ToolCount} tools.", toolSnapshot.Length);
-            return new NeedleSession(toolSnapshot, _options, _logger, RuntimeLease, customWeights);
+            return new NeedleSession(toolSnapshot, _options, _logger, RuntimeLease, model.ConfidenceCalibrated == true);
         }
         catch { RuntimeLease.Release(); throw; }
     }
@@ -130,40 +161,52 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
         return NeedleExtractionResults.Create(compilation, "extract", arguments => arguments.Deserialize(typeInfo), typeof(T).Name);
     }
 
-    private const long MaxWeightsBytes = 32L * 1024 * 1024 * 1024;
-
-    private static unsafe void LoadWeights(string path)
+    private static unsafe void LoadWeights(NeedleModelArtifact model)
     {
-        if (!File.Exists(path)) throw new NeedleArtifactNotFoundException($"Custom Needle weights were not found at '{path}'.");
-        if (new FileInfo(path).Length > MaxWeightsBytes)
-            throw new NeedleArtifactException($"Custom Needle weights exceed {MaxWeightsBytes} bytes.");
-        var bytes = File.ReadAllBytes(path);
+        using var file = File.OpenRead(model.Path);
+        if (file.Length > Array.MaxLength)
+            throw new NeedleArtifactException($"Needle weights exceed the managed buffer limit of {Array.MaxLength} bytes.");
+        var bytes = new byte[(int)file.Length];
+        file.ReadExactly(bytes);
         try
         {
+            if (!Convert.ToHexString(SHA256.HashData(bytes)).Equals(model.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new NeedleArtifactException($"Needle weights changed after verification: '{model.Path}'.");
+            using var archive = new MemoryStream(bytes, writable: false);
+            NeedleModelFormat.Read(archive, model.Path);
             fixed (byte* pointer = bytes)
-            { var code = NeedleNative.LoadWeights(pointer, (ulong)bytes.LongLength); if (code != 0) throw new NeedleInitializationException($"needle_load failed with code {code}."); }
+            {
+                var code = NeedleNative.LoadWeights(pointer, (ulong)bytes.LongLength);
+                if (code < 0)
+                {
+                    ModelLoadFailed = true;
+                    throw new NeedleInitializationException($"cactus_load failed with code {code}: {NeedleNative.LastError()}");
+                }
+            }
         }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(bytes);
-        }
+        finally { CryptographicOperations.ZeroMemory(bytes); }
     }
 
     private static void Validate(NeedleOptions options)
     {
         if (options.ResponseBufferSize < 1024) throw new ArgumentOutOfRangeException(nameof(options.ResponseBufferSize));
         if (options.DefaultMaxNewTokens <= 0) throw new ArgumentOutOfRangeException(nameof(options.DefaultMaxNewTokens));
-        if (options.ExpectedNativeLibrarySha256 is not null &&
-            (options.ExpectedNativeLibrarySha256.Length != 64 ||
-             options.ExpectedNativeLibrarySha256.Any(character => !Uri.IsHexDigit(character))))
-            throw new ArgumentException("Expected SHA-256 must contain exactly 64 hexadecimal characters.", nameof(options.ExpectedNativeLibrarySha256));
+        if (options.Threads < 0) throw new ArgumentOutOfRangeException(nameof(options.Threads));
+        ValidateHash(options.ExpectedNativeLibrarySha256, nameof(options.ExpectedNativeLibrarySha256));
+        ValidateHash(options.ExpectedModelSha256, nameof(options.ExpectedModelSha256));
+    }
+
+    private static void ValidateHash(string? hash, string parameter)
+    {
+        if (hash is not null && (hash.Length != 64 || !hash.All(Uri.IsHexDigit)))
+            throw new ArgumentException("Expected SHA-256 must contain exactly 64 hexadecimal characters.", parameter);
     }
 
     /// <summary>Marks the client as disposed; live sessions release the runtime lease on disposal.</summary>
     public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) == 0 && _ownsArtifacts && _artifacts is IDisposable disposable)
-            disposable.Dispose();
+        if (Interlocked.Exchange(ref _disposed, 1) == 0 && _ownsModels)
+            _models.Dispose();
         return ValueTask.CompletedTask;
     }
 }
@@ -174,15 +217,15 @@ internal sealed class NeedleSession : INeedleSession
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _lease;
     private readonly SemaphoreSlim _flight = new(1, 1);
-    private readonly bool _customWeights;
+    private readonly bool _calibrated;
     private readonly object _disposeSync = new();
     private Task? _disposeTask;
     private int _disposed;
     public IReadOnlyList<NeedleTool> Tools { get; }
     public string SessionId { get; } = Guid.NewGuid().ToString("N");
 
-    internal NeedleSession(IReadOnlyList<NeedleTool> tools, NeedleOptions defaults, ILogger logger, SemaphoreSlim lease, bool customWeights)
-    { Tools = tools; _defaults = defaults; _logger = logger; _lease = lease; _customWeights = customWeights; }
+    internal NeedleSession(IReadOnlyList<NeedleTool> tools, NeedleOptions defaults, ILogger logger, SemaphoreSlim lease, bool calibrated)
+    { Tools = tools; _defaults = defaults; _logger = logger; _lease = lease; _calibrated = calibrated; }
 
     public async ValueTask<ToolCallCompilation> CompleteAsync(string input, NeedleCompilationOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -197,21 +240,33 @@ internal sealed class NeedleSession : INeedleSession
         activity?.SetTag("needle.session.id", SessionId);
         try
         {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             cancellationToken.ThrowIfCancellationRequested();
             var buffer = new byte[_defaults.ResponseBufferSize];
-            var returnCode = NeedleNative.Complete(input, options?.MaxNewTokens ?? _defaults.DefaultMaxNewTokens, buffer, buffer.Length);
+            Array.Fill(buffer, (byte)0xff);
+            var returnCode = CompleteNative(input, options?.MaxNewTokens ?? _defaults.DefaultMaxNewTokens, buffer);
             cancellationToken.ThrowIfCancellationRequested();
-            if (returnCode < 0) throw new NeedleInferenceException($"needle_complete failed with code {returnCode}.");
             var length = Array.IndexOf(buffer, (byte)0);
+            if (returnCode < 0)
+            {
+                var detail = length > 0 ? Encoding.UTF8.GetString(buffer, 0, length) : NeedleNative.LastError();
+                throw new NeedleInferenceException($"cactus_complete failed with code {returnCode}: {detail}");
+            }
             if (length <= 0) throw new NeedleProtocolException("Needle returned an empty or unterminated response. Increase ResponseBufferSize if necessary.");
             var result = NeedleProtocol.Parse(buffer.AsSpan(0, length));
-            if (_customWeights) result = result with { Confidence = null };
+            if (!_calibrated) result = result with { Confidence = null };
             stopwatch.Stop();
             Record(result, stopwatch.Elapsed);
             _logger.LogInformation("Needle inference completed in {DurationMs}ms with {CallCount} calls and confidence {Confidence}.", stopwatch.Elapsed.TotalMilliseconds, result.Calls.Count, result.Confidence);
             return result;
         }
         finally { _flight.Release(); }
+    }
+
+    private static unsafe int CompleteNative(string input, int maxNewTokens, byte[] buffer)
+    {
+        fixed (byte* output = buffer)
+            return NeedleNative.Complete(input, null, 0, maxNewTokens, output, buffer.Length);
     }
 
     public async ValueTask ResetAsync(CancellationToken cancellationToken = default)
@@ -239,7 +294,11 @@ internal sealed class NeedleSession : INeedleSession
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         await _flight.WaitAsync().ConfigureAwait(false);
-        try { _lease.Release(); }
-        finally { _flight.Release(); _flight.Dispose(); }
+        try { NeedleNative.Reset(); }
+        finally
+        {
+            _lease.Release();
+            _flight.Release();
+        }
     }
 }

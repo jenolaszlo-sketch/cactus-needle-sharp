@@ -15,10 +15,14 @@ public sealed record NeedleOptions
     public string? ModelPath { get; init; }
     /// <summary>Gets whether network downloads are forbidden; requires an integrity-verified cached runtime.</summary>
     public bool Offline { get; init; }
-    /// <summary>Gets whether artifact size, hash, and manifest integrity are verified; true by default.</summary>
+    /// <summary>Compatibility setting retained for existing callers. Official pins and supplied checksums are always verified.</summary>
     public bool VerifyArtifactIntegrity { get; init; } = true;
     /// <summary>Gets the expected SHA-256 of an explicit native library, verified when integrity checks apply.</summary>
     public string? ExpectedNativeLibrarySha256 { get; init; }
+    /// <summary>Gets the expected SHA-256 of the explicit default model path, if supplied.</summary>
+    public string? ExpectedModelSha256 { get; init; }
+    /// <summary>Gets the Cactus thread count. Zero selects the native default.</summary>
+    public int Threads { get; init; }
     /// <summary>Gets the native response buffer size in bytes.</summary>
     public int ResponseBufferSize { get; init; } = 65_536;
     /// <summary>Gets the default maximum number of new tokens per inference.</summary>
@@ -69,7 +73,26 @@ public sealed record NeedleConfidencePolicy
 /// <param name="NativeLibraryPath">The full path to the native library.</param>
 /// <param name="Version">The engine version the artifacts belong to.</param>
 /// <param name="Source">The artifact source, such as explicit path or repository name.</param>
-public sealed record NeedleArtifacts(string NativeLibraryPath, string Version, string Source);
+public sealed record NeedleArtifacts(string NativeLibraryPath, string Version, string Source)
+{
+    /// <summary>Gets the verified upstream revision, when known.</summary>
+    public string? Revision { get; init; }
+    /// <summary>Gets the observed SHA-256, when available.</summary>
+    public string? Sha256 { get; init; }
+    /// <summary>Gets whether the observed identity matched a pinned or configured checksum.</summary>
+    public bool IntegrityVerified { get; init; }
+}
+
+/// <summary>Identifies the selected Needle 3 weights.</summary>
+/// <param name="Path">Full path to the weights.</param>
+/// <param name="Source">Official repository or explicit local source.</param>
+/// <param name="Revision">Verified upstream model revision, when known.</param>
+/// <param name="Sha256">Observed SHA-256 digest.</param>
+/// <param name="IntegrityVerified">Whether the digest matches a pinned or caller-supplied identity.</param>
+/// <param name="HasConfidenceHead">Whether the archive's head metadata declares a confidence head.</param>
+/// <param name="ConfidenceCalibrated">Whether confidence calibration is established for this identity.</param>
+public sealed record NeedleModelArtifact(string Path, string Source, string? Revision, string Sha256,
+    bool IntegrityVerified, bool HasConfidenceHead, bool? ConfidenceCalibrated);
 
 /// <summary>Describes wrapper, runtime, and model versions for a client.</summary>
 public sealed record NeedleRuntimeInfo
@@ -82,6 +105,24 @@ public sealed record NeedleRuntimeInfo
     public string? ModelVersion { get; init; }
     /// <summary>Gets the model or artifact source.</summary>
     public string? ModelSource { get; init; }
+    /// <summary>Gets the selected model generation.</summary>
+    public int? ModelGeneration { get; init; }
+    /// <summary>Gets the verified upstream runtime revision, if known.</summary>
+    public string? RuntimeRevision { get; init; }
+    /// <summary>Gets the observed runtime SHA-256, if available.</summary>
+    public string? RuntimeSha256 { get; init; }
+    /// <summary>Gets whether the runtime matched an expected digest.</summary>
+    public bool RuntimeIntegrityVerified { get; init; }
+    /// <summary>Gets the selected model's verified upstream revision, if known.</summary>
+    public string? ModelRevision { get; init; }
+    /// <summary>Gets the selected model's observed SHA-256.</summary>
+    public string? ModelSha256 { get; init; }
+    /// <summary>Gets whether the model matched an expected digest.</summary>
+    public bool ModelIntegrityVerified { get; init; }
+    /// <summary>Gets whether metadata declares a confidence head for these weights.</summary>
+    public bool? HasConfidenceHead { get; init; }
+    /// <summary>Gets whether calibration is established, or null when it is unknown.</summary>
+    public bool? ConfidenceCalibrated { get; init; }
 }
 
 /// <summary>Reports timing and throughput for one inference.</summary>
