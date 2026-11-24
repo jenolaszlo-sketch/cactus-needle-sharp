@@ -293,7 +293,13 @@ public sealed class NeedleModelManager
     public NeedleModelManager(INeedleArtifactProvider provider) => _provider = provider;
     /// <summary>Returns the resolved native artifacts.</summary>
     public ValueTask<NeedleArtifacts> GetArtifactsAsync(CancellationToken cancellationToken = default) => _provider.GetArtifactsAsync(cancellationToken);
-    /// <summary>Ensures the runtime is downloaded and verified, returning the resolved artifacts.</summary>
-    public ValueTask<NeedleArtifacts> EnsureAvailableAsync(CancellationToken cancellationToken = default) => _provider.GetArtifactsAsync(cancellationToken);
+    /// <summary>Ensures the runtime is available and resolves the model when using the default provider.</summary>
+    public async ValueTask<NeedleArtifacts> EnsureAvailableAsync(CancellationToken cancellationToken = default)
+    {
+        var engine = await _provider.GetArtifactsAsync(cancellationToken).ConfigureAwait(false);
+        if (_provider is HuggingFaceNeedleArtifactProvider official)
+            await official.GetModelArtifactsAsync(cancellationToken).ConfigureAwait(false);
+        return engine;
+    }
 }
 

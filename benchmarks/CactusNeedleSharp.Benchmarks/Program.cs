@@ -2,7 +2,10 @@ using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
 using CactusNeedleSharp;
 
-BenchmarkRunner.Run<ResponseDeserializationBenchmark>();
+if (args is ["--native-comparison", var runtimePath, var workerPath, ..] && args.Length is 3 or 4)
+    await NativeComparison.RunAsync(runtimePath, workerPath, args.Length == 4 ? args[3] : null);
+else
+    BenchmarkRunner.Run<ResponseDeserializationBenchmark>();
 
 [MemoryDiagnoser]
 public class ResponseDeserializationBenchmark

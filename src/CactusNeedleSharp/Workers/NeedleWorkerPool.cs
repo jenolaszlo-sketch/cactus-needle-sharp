@@ -169,8 +169,8 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
                 _workers.TryAdd(worker, 0);
                 NeedleDiagnostics.WorkersStarted.Add(1);
             }
-            await worker.InitializeAsync(toolSnapshot, options, operationCancellation.Token).ConfigureAwait(false);
-            return new NeedleWorkerSession(this, worker, Array.AsReadOnly(toolSnapshot), customWeights);
+            var runtime = await worker.InitializeAsync(toolSnapshot, options, operationCancellation.Token).ConfigureAwait(false);
+            return new NeedleWorkerSession(this, worker, Array.AsReadOnly(toolSnapshot), customWeights, runtime);
         }
         catch (OperationCanceledException) when (shutdownToken.IsCancellationRequested)
         {
@@ -252,10 +252,11 @@ internal sealed class NeedleWorkerSession : INeedleSession
     private int _disposed;
     public IReadOnlyList<NeedleTool> Tools { get; }
     public string SessionId { get; } = Guid.NewGuid().ToString("N");
+    public NeedleRuntimeInfo? RuntimeInfo { get; }
 
     internal NeedleWorkerSession(NeedleWorkerPool pool, NeedleWorkerProcess worker,
-        IReadOnlyList<NeedleTool> tools, bool customWeights)
-    { _pool = pool; _worker = worker; Tools = tools; _customWeights = customWeights; }
+        IReadOnlyList<NeedleTool> tools, bool customWeights, NeedleRuntimeInfo? runtimeInfo)
+    { _pool = pool; _worker = worker; Tools = tools; _customWeights = customWeights; RuntimeInfo = runtimeInfo; }
 
     public async ValueTask<ToolCallCompilation> CompleteAsync(string input, NeedleCompilationOptions? options = null,
         CancellationToken cancellationToken = default)

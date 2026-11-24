@@ -20,6 +20,7 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
     private readonly HuggingFaceNeedleArtifactProvider _models;
     private readonly bool _ownsModels;
     private readonly NeedleModelArtifact _defaultModel;
+    private readonly bool _officialEngine;
     private readonly ILogger _logger;
     private int _disposed;
 
@@ -35,6 +36,7 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
         _defaultModel = model;
         _logger = logger;
         NeedleNative.Load(engine);
+        _officialEngine = engine.IntegrityVerified && engine.Revision == HuggingFaceNeedleArtifactProvider.EngineRevision;
         RuntimeInfo = new()
         {
             WrapperVersion = typeof(NeedleClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
@@ -42,16 +44,21 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
             RuntimeRevision = engine.Revision,
             RuntimeSha256 = engine.Sha256,
             RuntimeIntegrityVerified = engine.IntegrityVerified,
-            ModelVersion = "needle3",
-            ModelGeneration = 3,
-            ModelSource = model.Source,
-            ModelRevision = model.Revision,
-            ModelSha256 = model.Sha256,
-            ModelIntegrityVerified = model.IntegrityVerified,
-            HasConfidenceHead = model.HasConfidenceHead,
-            ConfidenceCalibrated = model.ConfidenceCalibrated
         };
+        RuntimeInfo = DescribeModel(model);
     }
+
+    private NeedleRuntimeInfo DescribeModel(NeedleModelArtifact model) => RuntimeInfo with
+    {
+        ModelVersion = "needle3",
+        ModelGeneration = 3,
+        ModelSource = model.Source,
+        ModelRevision = model.Revision,
+        ModelSha256 = model.Sha256,
+        ModelIntegrityVerified = model.IntegrityVerified,
+        HasConfidenceHead = model.HasConfidenceHead,
+        ConfidenceCalibrated = _officialEngine ? model.ConfidenceCalibrated : null
+    };
 
     /// <summary>Resolves artifacts and creates an initialized client.</summary>
     public static async ValueTask<NeedleClient> CreateAsync(NeedleOptions? options = null,
@@ -101,9 +108,9 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
         try
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            var model = options?.WeightsPath is { Length: > 0 } path
-                ? await _models.GetModelArtifactsAsync(path, cancellationToken).ConfigureAwait(false)
-                : _defaultModel;
+            var model = string.IsNullOrWhiteSpace(options?.WeightsPath)
+                ? _defaultModel
+                : await _models.GetModelArtifactsAsync(options.WeightsPath, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             if (ModelLoadFailed)
                 throw new NeedleInitializationException("A Cactus model load failed in this process. Create a fresh worker.");
@@ -128,8 +135,7 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
                 NeedleNative.Reset();
                 cancellationToken.ThrowIfCancellationRequested();
             }
-            _logger.LogInformation("Needle session created with {ToolCount} tools.", toolSnapshot.Length);
-            return new NeedleSession(Array.AsReadOnly(toolSnapshot), _options, _logger, RuntimeLease, model.ConfidenceCalibrated == true);
+            return new NeedleSession(Array.AsReadOnly(toolSnapshot), _options, _logger, RuntimeLease, DescribeModel(model));
         }
         catch { RuntimeLease.Release(); throw; }
     }
@@ -219,15 +225,15 @@ internal sealed class NeedleSession : INeedleSession
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _lease;
     private readonly SemaphoreSlim _flight = new(1, 1);
-    private readonly bool _calibrated;
     private readonly object _disposeSync = new();
     private Task? _disposeTask;
     private int _disposed;
     public IReadOnlyList<NeedleTool> Tools { get; }
     public string SessionId { get; } = Guid.NewGuid().ToString("N");
+    public NeedleRuntimeInfo RuntimeInfo { get; }
 
-    internal NeedleSession(IReadOnlyList<NeedleTool> tools, NeedleOptions defaults, ILogger logger, SemaphoreSlim lease, bool calibrated)
-    { Tools = tools; _defaults = defaults; _logger = logger; _lease = lease; _calibrated = calibrated; }
+    internal NeedleSession(IReadOnlyList<NeedleTool> tools, NeedleOptions defaults, ILogger logger, SemaphoreSlim lease, NeedleRuntimeInfo runtimeInfo)
+    { Tools = tools; _defaults = defaults; _logger = logger; _lease = lease; RuntimeInfo = runtimeInfo; }
 
     public async ValueTask<ToolCallCompilation> CompleteAsync(string input, NeedleCompilationOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -256,7 +262,7 @@ internal sealed class NeedleSession : INeedleSession
             }
             if (length <= 0) throw new NeedleProtocolException("Needle returned an empty or unterminated response. Increase ResponseBufferSize if necessary.");
             var result = NeedleProtocol.Parse(buffer.AsSpan(0, length), Tools);
-            if (!_calibrated) result = result with { Confidence = null };
+            if (RuntimeInfo.ConfidenceCalibrated != true) result = result with { Confidence = null };
             stopwatch.Stop();
             Record(result, stopwatch.Elapsed);
             _logger.LogInformation("Needle inference completed in {DurationMs}ms with {CallCount} calls and confidence {Confidence}.", stopwatch.Elapsed.TotalMilliseconds, result.Calls.Count, result.Confidence);

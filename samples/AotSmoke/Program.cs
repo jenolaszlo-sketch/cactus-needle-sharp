@@ -1,7 +1,3 @@
-// NativeAOT smoke test: exercises the trim-sensitive JSON surface (schema
-// generation from metadata, tool serialization, argument round-trips) without
-// a native runtime. Any failure throws, so a zero exit code means the
-// AOT-published binary preserved every path.
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CactusNeedleSharp;
@@ -39,6 +35,17 @@ var typed = NeedleTool.FromType("get_weather", AotSmokeContext.Default.WeatherAr
 Check(
     typed.DeserializeCallArguments(call, AotSmokeContext.Default.WeatherArguments) == arguments,
     "tool-bound deserialization round-trips");
+
+if (Environment.GetEnvironmentVariable("NEEDLE_TEST_CACHE_DIRECTORY") is { } cache)
+{
+    await using var client = await NeedleClient.CreateAsync(new() { CacheDirectory = cache, Offline = true });
+    var compilation = await client.CompileAsync("What is the weather in Paris?", [tool]);
+    Check(compilation.Calls.Count == 1, "native response is decoded using generated metadata");
+    Check(typed.DeserializeCallArguments(compilation.Calls[0], AotSmokeContext.Default.WeatherArguments).City == "Paris",
+        "native tool arguments round-trip");
+    var extraction = await client.ExtractAsync("The city is Paris.", AotSmokeContext.Default.WeatherArguments);
+    Check(extraction.Success && extraction.Value?.City == "Paris", "native extraction uses generated metadata");
+}
 
 Console.WriteLine("CactusNeedleSharp AOT smoke test passed.");
 

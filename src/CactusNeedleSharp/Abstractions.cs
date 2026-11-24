@@ -52,6 +52,9 @@ public interface INeedleSession : IAsyncDisposable
     /// <summary>Runs inference for <paramref name="input"/> and returns the compiled tool calls.</summary>
     ValueTask<ToolCallCompilation> CompleteAsync(string input, NeedleCompilationOptions? options = null,
         CancellationToken cancellationToken = default);
+    /// <summary>Gets the runtime and weights selected for this session, when reported by the backend.</summary>
+    NeedleRuntimeInfo? RuntimeInfo => null;
+
     /// <summary>Resets the native conversation state for this session.</summary>
     ValueTask ResetAsync(CancellationToken cancellationToken = default);
 }

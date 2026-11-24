@@ -23,6 +23,7 @@ namespace CactusNeedleSharp;
 [JsonSerializable(typeof(List<NeedleTool>))]
 [JsonSerializable(typeof(ToolCallCompilation))]
 [JsonSerializable(typeof(NeedleToolCall))]
+[JsonSerializable(typeof(NeedleRuntimeInfo))]
 [JsonSerializable(typeof(JsonObject))]
 internal sealed partial class NeedleJsonContext : JsonSerializerContext
 {

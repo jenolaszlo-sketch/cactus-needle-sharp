@@ -80,13 +80,16 @@ internal sealed class NeedleWorkerProcess : IAsyncDisposable
         }
     }
 
-    internal async ValueTask InitializeAsync(IReadOnlyList<NeedleTool> tools, NeedleSessionOptions? session,
+    internal async ValueTask<NeedleRuntimeInfo?> InitializeAsync(IReadOnlyList<NeedleTool> tools, NeedleSessionOptions? session,
         CancellationToken cancellationToken)
     {
         NeedleValidation.SessionOptions(session, _options.Runtime);
-        _ = await SendAsync<JsonElement>("initialize", new WorkerInitializePayload
+        var payload = await SendAsync<JsonElement>("initialize", new WorkerInitializePayload
         { Runtime = _options.Runtime, Tools = tools.ToArray(), Session = session }, cancellationToken).ConfigureAwait(false);
         HasInitializedSession = true;
+        return payload.TryGetProperty("runtimeInfo", out var info)
+            ? info.Deserialize(NeedleJsonContext.Default.NeedleRuntimeInfo)
+            : null;
     }
 
     internal ValueTask<ToolCallCompilation> CompleteAsync(string input, NeedleCompilationOptions? options,

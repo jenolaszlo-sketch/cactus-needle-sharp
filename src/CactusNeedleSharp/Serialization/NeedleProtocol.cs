@@ -26,6 +26,8 @@ internal static class NeedleProtocol
                 throw new NeedleProtocolException("Cactus returned an incomplete or inconsistent response envelope.");
             if (response.Confidence is { } confidence && (!double.IsFinite(confidence) || confidence is < 0 or > 1))
                 throw new NeedleProtocolException("Cactus returned confidence outside the interval [0, 1].");
+            if (!MetricValid(response.PrefillTps) || !MetricValid(response.DecodeTps) || !MetricValid(response.PeakRam))
+                throw new NeedleProtocolException("Cactus returned an invalid inference metric.");
             if (response.Validation is { } validation &&
                 (validation.Negation is null || validation.Ungrounded is null ||
                  validation.Ungrounded.Any(string.IsNullOrWhiteSpace)))
@@ -67,6 +69,8 @@ internal static class NeedleProtocol
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException) { throw new NeedleProtocolException("Cactus returned malformed JSON.", exception); }
     }
+
+    private static bool MetricValid(double? value) => value is null || (double.IsFinite(value.Value) && value >= 0);
 
     private static NeedleToolCall[] ReadCalls(Call?[]? values)
     {

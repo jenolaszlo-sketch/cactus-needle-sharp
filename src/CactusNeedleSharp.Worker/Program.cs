@@ -85,7 +85,11 @@ internal static class WorkerHost
             if (client is not null) { await client.DisposeAsync().ConfigureAwait(false); client = null; }
             client = await NeedleClient.CreateAsync(initialization.Runtime).ConfigureAwait(false);
             session = await client.CreateSessionAsync(initialization.Tools, initialization.Session).ConfigureAwait(false);
-            return new JsonObject { ["initialized"] = true };
+            return new JsonObject
+            {
+                ["initialized"] = true,
+                ["runtimeInfo"] = JsonSerializer.SerializeToNode(session.RuntimeInfo, NeedleJsonContext.Default.NeedleRuntimeInfo)
+            };
         }
 
         async Task<ToolCallCompilation> CompleteAsync(WorkerRequest request)

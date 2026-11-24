@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace CactusNeedleSharp;
 
@@ -30,8 +31,15 @@ internal static partial class NeedleNative
             }
 
             IntPtr handle;
-            try { handle = NativeLibrary.Load(fullPath); }
-            catch (Exception error) when (error is DllNotFoundException or BadImageFormatException or FileLoadException)
+            try
+            {
+                using var library = File.OpenRead(fullPath);
+                if (artifact.Sha256 is { } expected &&
+                    !Convert.ToHexString(SHA256.HashData(library)).Equals(expected, StringComparison.OrdinalIgnoreCase))
+                    throw new NeedleNativeLibraryException($"Cactus library changed after verification: '{fullPath}'.");
+                handle = NativeLibrary.Load(fullPath);
+            }
+            catch (Exception error) when (error is DllNotFoundException or BadImageFormatException or IOException or UnauthorizedAccessException)
             { throw new NeedleNativeLibraryException($"Unable to load the Cactus runtime at '{fullPath}'.", error); }
 
             foreach (var symbol in RequiredExports)

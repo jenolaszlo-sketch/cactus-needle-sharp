@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Text.Json.Serialization;
 using CactusNeedleSharp;
 using Xunit;
@@ -99,6 +100,9 @@ public sealed partial class Needle3NativeTests
             Assert.Equal(1, pool.IdleWorkerCount);
             await using (var custom = await pool.CreateSessionAsync([Weather], new() { WeightsPath = path }))
             {
+                Assert.Null(custom.RuntimeInfo!.ConfidenceCalibrated);
+                Assert.True(custom.RuntimeInfo.HasConfidenceHead);
+                Assert.Equal("explicit", custom.RuntimeInfo.ModelSource);
                 var result = await custom.CompleteAsync("What is the weather in Paris?");
                 Assert.Single(result.Calls);
                 Assert.Null(result.Confidence);
@@ -116,10 +120,118 @@ public sealed partial class Needle3NativeTests
         finally { File.Delete(path); }
     }
 
+    [NeedleIntegrationFact]
+    [Trait("Category", "NeedleIntegration")]
+    public async Task NativeReturnsMultipleConstrainedCallsAndSupportsOptionalArguments()
+    {
+        var thermostat = NeedleTool.FromJson("""
+            {"name":"set_thermostat","description":"Set target temperature for a room in Celsius","parameters":{"type":"object",
+             "properties":{"room":{"type":"string","enum":["kitchen","bedroom"]},
+             "temperature":{"type":"integer","minimum":10,"maximum":35},"mode":{"type":"string","enum":["eco","boost"]}},
+             "required":["room","temperature"],"additionalProperties":false}}
+            """);
+        await using var client = await NeedleClient.CreateAsync(Runtime);
+        var multiple = await client.CompileAsync("Set kitchen thermostat to 21 degrees and get the weather in Paris.", [thermostat, Weather]);
+        Assert.Collection(multiple.Calls,
+            call =>
+            {
+                Assert.Equal("set_thermostat", call.Name);
+                Assert.Equal("kitchen", call.Arguments.GetProperty("room").GetString());
+                Assert.Equal(21, call.Arguments.GetProperty("temperature").GetInt32());
+                Assert.False(call.Arguments.TryGetProperty("mode", out _));
+            },
+            call =>
+            {
+                Assert.Equal("get_weather", call.Name);
+                Assert.Equal("Paris", call.Arguments.GetProperty("city").GetString());
+            });
+        var optional = await client.CompileAsync("Set the bedroom thermostat to 23 degrees Celsius in eco mode.", [thermostat, Weather]);
+        Assert.Equal("eco", Assert.Single(optional.Calls).Arguments.GetProperty("mode").GetString());
+        var invalid = await client.CompileAsync("Set the kitchen thermostat to 80 degrees Celsius.", [thermostat, Weather]);
+        Assert.Empty(invalid.Calls);
+        Assert.False(invalid.IsConfident(0));
+    }
+
+    [NeedleIntegrationFact]
+    [Trait("Category", "NeedleIntegration")]
+    public async Task OfflineCacheRejectsTamperedEngineAndModelAndLegacyWeights()
+    {
+        using var provider = new HuggingFaceNeedleArtifactProvider(Runtime);
+        var engine = await provider.GetArtifactsAsync();
+        var model = await provider.GetModelArtifactsAsync();
+        var root = Path.Combine(Cache, Guid.NewGuid().ToString("N"));
+        string CopyToIsolatedCache(string artifact)
+        {
+            var target = Path.Combine(root, Path.GetRelativePath(Cache, artifact));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(artifact, target);
+            return target;
+        }
+        try
+        {
+            var enginePath = CopyToIsolatedCache(engine.NativeLibraryPath);
+            var modelPath = CopyToIsolatedCache(model.Path);
+            using var offline = new HuggingFaceNeedleArtifactProvider(new() { CacheDirectory = root, Offline = true, VerifyArtifactIntegrity = false });
+            Assert.True((await offline.GetArtifactsAsync()).IntegrityVerified);
+            Assert.True((await offline.GetModelArtifactsAsync()).IntegrityVerified);
+            using (var file = File.OpenWrite(enginePath)) file.WriteByte(0);
+            await Assert.ThrowsAsync<NeedleArtifactNotFoundException>(() => offline.GetArtifactsAsync().AsTask());
+            using (var file = File.OpenWrite(modelPath)) file.SetLength(48);
+            await Assert.ThrowsAsync<NeedleArtifactNotFoundException>(() => offline.GetModelArtifactsAsync().AsTask());
+            await File.WriteAllBytesAsync(modelPath, [0x83, 0x2a, 0xe1, 0x05]);
+            using var legacy = new HuggingFaceNeedleArtifactProvider(new() { ModelPath = modelPath, Offline = true });
+            var error = await Assert.ThrowsAsync<NeedleArtifactException>(() => legacy.GetModelArtifactsAsync().AsTask());
+            Assert.Contains("Needle 2", error.Message);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [NeedleIntegrationFact]
+    [Trait("Category", "NeedleIntegration")]
+    public async Task RealWorkerCrashAndBadModelReturnCapacity()
+    {
+        var workerPath = Environment.GetEnvironmentVariable("NEEDLE_WORKER_PATH");
+        Assert.True(File.Exists(workerPath));
+        await using var pool = new NeedleWorkerPool(new() { WorkerPath = workerPath!, MaximumWorkers = 1, Runtime = Runtime });
+        var nonexistent = Path.Combine(Cache, Guid.NewGuid() + ".cact");
+        await Assert.ThrowsAsync<NeedleWorkerException>(() =>
+            pool.CreateSessionAsync([Weather], new() { WeightsPath = nonexistent }).AsTask());
+        Assert.Equal(0, pool.WorkerCount);
+
+        await using var session = await pool.CreateSessionAsync([Weather]);
+        int processId = 0;
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "CactusNeedleSharp",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = activity =>
+            {
+                if (activity.GetTagItem("needle.session.id") as string == session.SessionId &&
+                    activity.GetTagItem("process.pid") is int id)
+                    processId = id;
+            }
+        };
+        ActivitySource.AddActivityListener(listener);
+        await session.CompleteAsync("What is the weather in Paris?");
+        Assert.True(processId > 0);
+        using (var process = Process.GetProcessById(processId))
+        {
+            process.Kill();
+            await process.WaitForExitAsync();
+        }
+        await Assert.ThrowsAsync<NeedleWorkerException>(() => session.CompleteAsync("What is the weather in Paris?").AsTask());
+        await session.DisposeAsync();
+        await using var replacement = await pool.CreateSessionAsync([Weather]);
+        Assert.Single((await replacement.CompleteAsync("What is the weather in Paris?")).Calls);
+        Assert.Equal(1, pool.WorkerCount);
+    }
+
     public sealed record Recipient(string Name);
 
     [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
     [JsonSerializable(typeof(Recipient))]
     private sealed partial class NativeJsonContext : JsonSerializerContext;
 }
-

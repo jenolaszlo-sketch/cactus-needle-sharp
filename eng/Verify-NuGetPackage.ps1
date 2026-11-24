@@ -28,7 +28,7 @@ try {
         $extension = [IO.Path]::GetExtension($_).ToLowerInvariant()
         $leaf = [IO.Path]::GetFileName($_)
         $forbiddenExtensions -contains $extension -or
-            ($extension -eq '.dll' -and ($_.StartsWith('runtimes/', [StringComparison]::OrdinalIgnoreCase) -or $leaf.Equals('libneedle.dll', [StringComparison]::OrdinalIgnoreCase)))
+            ($extension -eq '.dll' -and ($_.StartsWith('runtimes/', [StringComparison]::OrdinalIgnoreCase) -or $leaf -in @('libneedle.dll', 'libcactus.dll')))
     }
     if ($forbidden.Count -gt 0) {
         throw "Package unexpectedly contains upstream model/native artifacts: $($forbidden -join ', ')"
