@@ -303,4 +303,3 @@ public sealed class NeedleModelManager
         return engine;
     }
 }
-
