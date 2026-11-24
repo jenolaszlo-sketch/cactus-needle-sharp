@@ -113,7 +113,7 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider,
     public ValueTask<NeedleModelArtifact> GetModelArtifactsAsync(CancellationToken cancellationToken = default) =>
         GetModelArtifactsAsync(null, cancellationToken);
 
-    internal async ValueTask<NeedleModelArtifact> GetModelArtifactsAsync(string? overridePath, CancellationToken cancellationToken)
+    internal async ValueTask<NeedleModelArtifact> GetModelArtifactsAsync(string? overridePath, CancellationToken cancellationToken, string? expectedOverride = null)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         cancellationToken.ThrowIfCancellationRequested();
@@ -125,7 +125,7 @@ public sealed class HuggingFaceNeedleArtifactProvider : INeedleArtifactProvider,
                 throw new NeedleArtifactNotFoundException($"Needle model was not found at '{path}'.");
             var metadata = NeedleModelFormat.Read(path);
             var hash = await ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
-            var expected = overridePath is null ? _options.ExpectedModelSha256 : null;
+            var expected = overridePath is null ? _options.ExpectedModelSha256 : expectedOverride;
             if (expected is not null && !string.Equals(hash, expected, StringComparison.OrdinalIgnoreCase))
                 throw new NeedleArtifactException($"Configured Needle model SHA-256 mismatch at '{path}'.");
             if (hash == Model.Sha256)

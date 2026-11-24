@@ -84,6 +84,18 @@ public sealed record ToolCallCompilation
     public required bool Success { get; init; }
     /// <summary>Gets the compiled tool calls, empty when there is no call.</summary>
     public IReadOnlyList<NeedleToolCall> Calls { get; init; } = Array.Empty<NeedleToolCall>();
+    /// <summary>Gets the native response type, if available.</summary>
+    public string? ResponseType { get; init; }
+    /// <summary>Gets calls deliberately withheld by the native engine.</summary>
+    public IReadOnlyList<NeedleToolCall> SuppressedCalls { get; init; } = Array.Empty<NeedleToolCall>();
+    /// <summary>Gets proposed calls withheld by the managed validation policy.</summary>
+    public IReadOnlyList<NeedleToolCall> RejectedCalls { get; init; } = Array.Empty<NeedleToolCall>();
+    /// <summary>Gets native validation metadata, if reported.</summary>
+    public NeedleNativeValidation? Validation { get; init; }
+    /// <summary>Gets the machine-readable native reason, if reported.</summary>
+    public string? Reason { get; init; }
+    /// <summary>Gets the native engine's reported peak RAM in megabytes, if available.</summary>
+    public double? PeakRamMegabytes { get; init; }
     /// <summary>Gets the model-reported confidence, if any.</summary>
     public double? Confidence { get; init; }
     /// <summary>Gets model reasoning text, if any.</summary>
@@ -100,16 +112,25 @@ public sealed record ToolCallCompilation
     public bool IsConfident(double threshold)
     {
         ValidateConfidence(threshold);
-        return Success && Calls.Count > 0 && Confidence is { } confidence && confidence >= threshold;
+        return Classify(threshold) == NeedleCompilationOutcome.Success;
     }
     /// <summary>Maps this result to a <see cref="NeedleCompilationOutcome"/> using <paramref name="policy"/>.</summary>
     public NeedleCompilationOutcome GetOutcome(NeedleConfidencePolicy? policy = null)
     {
         var minimum = (policy ?? new()).MinimumConfidence;
         ValidateConfidence(minimum);
+        return Classify(minimum);
+    }
+
+    private NeedleCompilationOutcome Classify(double minimum)
+    {
         if (!Success) return NeedleCompilationOutcome.Failed;
+        if (ResponseType is "refusal" or "refuse" || SuppressedCalls.Count != 0 || Validation?.Negation == true || Validation?.Ungrounded?.Length > 0)
+            return NeedleCompilationOutcome.Suppressed;
+        if (RejectedCalls.Count != 0 || (ResponseType is not null && ResponseType != "call"))
+            return NeedleCompilationOutcome.Failed;
         if (Calls.Count == 0) return NeedleCompilationOutcome.NoCall;
-        return Confidence is { } confidence && confidence >= minimum
+        return Confidence is { } confidence && confidence <= 1 && confidence >= minimum
             ? NeedleCompilationOutcome.Success
             : NeedleCompilationOutcome.LowConfidence;
     }
@@ -131,7 +152,18 @@ public enum NeedleCompilationOutcome
     /// <summary>Compilation succeeded but confidence fell below the required minimum.</summary>
     LowConfidence,
     /// <summary>Compilation failed.</summary>
-    Failed
+    Failed,
+    /// <summary>Native suppression or validation blocked execution of the result.</summary>
+    Suppressed
+}
+
+/// <summary>Contains validation signals emitted by the Cactus engine.</summary>
+public sealed record NeedleNativeValidation
+{
+    /// <summary>Gets native argument paths flagged as ungrounded.</summary>
+    public string[]? Ungrounded { get; init; }
+    /// <summary>Gets whether the native engine detected negation.</summary>
+    public bool? Negation { get; init; }
 }
 
 /// <summary>Represents a single planned tool invocation.</summary>
@@ -161,7 +193,7 @@ public sealed record NeedleExtractionResult<T>
     public NeedleCompilationOutcome GetOutcome(NeedleConfidencePolicy? policy = null)
     {
         var compilationOutcome = Compilation.GetOutcome(policy);
-        if (compilationOutcome == NeedleCompilationOutcome.NoCall) return compilationOutcome;
+        if (compilationOutcome is NeedleCompilationOutcome.NoCall or NeedleCompilationOutcome.Suppressed) return compilationOutcome;
         return Success ? compilationOutcome : NeedleCompilationOutcome.Failed;
     }
 }

@@ -27,13 +27,14 @@ public sealed partial class NeedleToolTests
     [Fact]
     public void ProtocolPreservesArgumentsAndNullableConfidence()
     {
-        var result = NeedleProtocol.Parse("""{"success":true,"function_calls":[{"name":"search","arguments":{"q":1}}],"future":true}"""u8);
+        var tool = NeedleTool.FromJson("""{"name":"search","parameters":{"type":"object"}}""");
+        var result = NeedleProtocol.Parse("""{"type":"call","success":true,"function_calls":[{"name":"search","arguments":{"q":1}}],"suppressed_calls":[],"future":true}"""u8, [tool]);
         Assert.Null(result.Confidence);
         Assert.Equal(1, result.Calls[0].Arguments.GetProperty("q").GetInt32());
     }
 
     [Fact]
-    public void ProtocolRejectsMalformedJson() => Assert.Throws<NeedleProtocolException>(() => NeedleProtocol.Parse("{"u8));
+    public void ProtocolRejectsMalformedJson() => Assert.Throws<NeedleProtocolException>(() => NeedleProtocol.Parse("{"u8, []));
 
     [Fact]
     public void TypedArgumentsAndOutcomeAreExplicit()

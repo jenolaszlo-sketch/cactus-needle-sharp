@@ -65,7 +65,9 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
         try
         {
             var engine = await (artifactProvider ?? models).GetArtifactsAsync(cancellationToken).ConfigureAwait(false);
-            var model = await models.GetModelArtifactsAsync(cancellationToken).ConfigureAwait(false);
+            var model = string.IsNullOrWhiteSpace(options.ModelPath)
+                ? await models.GetModelArtifactsAsync(cancellationToken).ConfigureAwait(false)
+                : await models.GetModelArtifactsAsync(options.ModelPath, cancellationToken, options.ExpectedModelSha256).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             return new(options, models, ownsModels, engine, model,
                 (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<NeedleClient>());
@@ -99,7 +101,7 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
         try
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            var model = options?.WeightsPath is { } path
+            var model = options?.WeightsPath is { Length: > 0 } path
                 ? await _models.GetModelArtifactsAsync(path, cancellationToken).ConfigureAwait(false)
                 : _defaultModel;
             cancellationToken.ThrowIfCancellationRequested();
@@ -127,7 +129,7 @@ public sealed class NeedleClient : IToolCallCompiler, IToolCallPlanner, INeedleS
                 cancellationToken.ThrowIfCancellationRequested();
             }
             _logger.LogInformation("Needle session created with {ToolCount} tools.", toolSnapshot.Length);
-            return new NeedleSession(toolSnapshot, _options, _logger, RuntimeLease, model.ConfidenceCalibrated == true);
+            return new NeedleSession(Array.AsReadOnly(toolSnapshot), _options, _logger, RuntimeLease, model.ConfidenceCalibrated == true);
         }
         catch { RuntimeLease.Release(); throw; }
     }
@@ -253,7 +255,7 @@ internal sealed class NeedleSession : INeedleSession
                 throw new NeedleInferenceException($"cactus_complete failed with code {returnCode}: {detail}");
             }
             if (length <= 0) throw new NeedleProtocolException("Needle returned an empty or unterminated response. Increase ResponseBufferSize if necessary.");
-            var result = NeedleProtocol.Parse(buffer.AsSpan(0, length));
+            var result = NeedleProtocol.Parse(buffer.AsSpan(0, length), Tools);
             if (!_calibrated) result = result with { Confidence = null };
             stopwatch.Stop();
             Record(result, stopwatch.Elapsed);

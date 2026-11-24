@@ -16,6 +16,7 @@ internal sealed class NeedleWorkerProcess : IAsyncDisposable
 
     internal DateTimeOffset LastUsedAt { get; private set; } = DateTimeOffset.UtcNow;
 
+    internal bool HasInitializedSession { get; private set; }
     internal bool IsHealthy
     {
         get
@@ -85,6 +86,7 @@ internal sealed class NeedleWorkerProcess : IAsyncDisposable
         NeedleValidation.SessionOptions(session, _options.Runtime);
         _ = await SendAsync<JsonElement>("initialize", new WorkerInitializePayload
         { Runtime = _options.Runtime, Tools = tools.ToArray(), Session = session }, cancellationToken).ConfigureAwait(false);
+        HasInitializedSession = true;
     }
 
     internal ValueTask<ToolCallCompilation> CompleteAsync(string input, NeedleCompilationOptions? options,

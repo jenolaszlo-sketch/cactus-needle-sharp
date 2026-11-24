@@ -5,7 +5,7 @@ namespace CactusNeedleSharp;
 
 internal static class WorkerProtocol
 {
-    internal const int Version = 1;
+    internal const int Version = 2;
     internal const string Prefix = "@cactusneedlesharp:";
 
     internal static async ValueTask<string?> ReadBoundedLineAsync(TextReader reader, int maximumLength,

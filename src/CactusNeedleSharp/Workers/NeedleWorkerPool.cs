@@ -111,6 +111,7 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         var toolSnapshot = NeedleValidation.Tools(tools);
         NeedleValidation.SessionOptions(options, _options.Runtime);
+        var customWeights = !string.IsNullOrWhiteSpace(options?.WeightsPath ?? _options.Runtime.ModelPath);
         var shutdownToken = _shutdown.Token;
         var queueStarted = Stopwatch.GetTimestamp();
         if (!_leases.Wait(0))
@@ -146,6 +147,11 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
                 var expired = _options.IdleWorkerTimeout is { } idleTimeout && DateTimeOffset.UtcNow - candidate.LastUsedAt >= idleTimeout;
                 if (candidate.IsHealthy && !expired)
                 {
+                    if (customWeights && candidate.HasInitializedSession)
+                    {
+                        await RemoveAndDisposeAsync(candidate).ConfigureAwait(false);
+                        break;
+                    }
                     worker = candidate;
                     NeedleDiagnostics.WorkersReused.Add(1);
                     break;
@@ -163,7 +169,8 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
                 _workers.TryAdd(worker, 0);
                 NeedleDiagnostics.WorkersStarted.Add(1);
             }
-            return await StartSessionAsync(worker, toolSnapshot, options, operationCancellation.Token).ConfigureAwait(false);
+            await worker.InitializeAsync(toolSnapshot, options, operationCancellation.Token).ConfigureAwait(false);
+            return new NeedleWorkerSession(this, worker, Array.AsReadOnly(toolSnapshot), customWeights);
         }
         catch (OperationCanceledException) when (shutdownToken.IsCancellationRequested)
         {
@@ -178,17 +185,6 @@ public sealed class NeedleWorkerPool : INeedleWorkerPool
             throw;
         }
         finally { _startGate.Release(); }
-    }
-
-    private async ValueTask<INeedleSession> StartSessionAsync(
-        NeedleWorkerProcess worker,
-        IReadOnlyList<NeedleTool> tools,
-        NeedleSessionOptions? options,
-        CancellationToken cancellationToken)
-    {
-        await worker.InitializeAsync(tools, options, cancellationToken).ConfigureAwait(false);
-        var customWeights = !string.IsNullOrWhiteSpace(options?.WeightsPath ?? _options.Runtime.ModelPath);
-        return new NeedleWorkerSession(this, worker, tools.ToArray(), customWeights);
     }
 
     internal async ValueTask ReturnAsync(NeedleWorkerProcess worker, bool reusable)
@@ -300,6 +296,6 @@ internal sealed class NeedleWorkerSession : INeedleSession
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         await _flight.WaitAsync().ConfigureAwait(false);
         try { await _pool.ReturnAsync(_worker, reusable: !_customWeights).ConfigureAwait(false); }
-        finally { _flight.Release(); _flight.Dispose(); }
+        finally { _flight.Release(); }
     }
 }
