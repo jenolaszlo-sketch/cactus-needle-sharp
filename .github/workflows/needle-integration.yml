@@ -99,7 +99,6 @@ jobs:
       - name: Run native integration and offline reuse tests
         run: dotnet test tests/CactusNeedleSharp.IntegrationTests/CactusNeedleSharp.IntegrationTests.csproj --no-build --configuration Release --filter "Category=NeedleIntegration" --logger "console;verbosity=normal"
 
-
   musl-integration:
     name: Linux musl ${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
@@ -119,4 +118,11 @@ jobs:
         run: |
           mkdir -p "${{ runner.temp }}/cactus-musl-cache"
           docker run --rm \
-            -v "${{ github.workspace }}:/src" -w /src             -v "${{ runner.temp }}/cactus-musl-cache:/cactus-cache"             -e DOTNET_ROLL_FORWARD=Major -e DOTNET_NOLOGO=1 -e DOTNET_CLI_TELEMETRY_OPTOUT=1             -e NEEDLE_RUN_INTEGRATION_TESTS=1 -e NEEDLE_EXPECTED_ARCHITECTURE=${{ matrix.architecture }}             -e NEEDLE_TEST_CACHE_DIRECTORY=/cactus-cache             -e NEEDLE_WORKER_PATH=/src/src/CactusNeedleSharp.Worker/bin/Release/net8.0/CactusNeedleSharp.Worker             mcr.microsoft.com/dotnet/sdk:10.0-alpine             dotnet test tests/CactusNeedleSharp.IntegrationTests -c Release --filter Category=NeedleIntegration
+            -v "${{ github.workspace }}:/src" -w /src \
+            -v "${{ runner.temp }}/cactus-musl-cache:/cactus-cache" \
+            -e DOTNET_ROLL_FORWARD=Major -e DOTNET_NOLOGO=1 -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+            -e NEEDLE_RUN_INTEGRATION_TESTS=1 -e NEEDLE_EXPECTED_ARCHITECTURE=${{ matrix.architecture }} \
+            -e NEEDLE_TEST_CACHE_DIRECTORY=/cactus-cache \
+            -e NEEDLE_WORKER_PATH=/src/src/CactusNeedleSharp.Worker/bin/Release/net8.0/CactusNeedleSharp.Worker \
+            mcr.microsoft.com/dotnet/sdk:10.0-alpine \
+            dotnet test tests/CactusNeedleSharp.IntegrationTests -c Release --filter Category=NeedleIntegration

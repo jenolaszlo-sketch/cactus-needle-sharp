@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -32,7 +33,6 @@ internal static class NeedleArgumentSchema
                 "const" => Equal(value, rule.Value),
                 "allOf" => rule.Value.EnumerateArray().All(item => MatchesCore(value, item)),
                 "anyOf" => rule.Value.EnumerateArray().Any(item => MatchesCore(value, item)),
-                "oneOf" => rule.Value.EnumerateArray().Count(item => MatchesCore(value, item)) == 1,
                 "properties" or "additionalProperties" => true, // Evaluated together below.
                 "required" => value.ValueKind != JsonValueKind.Object ||
                     rule.Value.EnumerateArray().All(item => value.TryGetProperty(item.GetString()!, out _)),
@@ -46,12 +46,12 @@ internal static class NeedleArgumentSchema
                 "maxLength" => value.ValueKind != JsonValueKind.String || RuneCount(value) <= rule.Value.GetInt32(),
                 "pattern" => value.ValueKind != JsonValueKind.String ||
                     Regex.IsMatch(value.GetString()!, rule.Value.GetString()!, RegexOptions.CultureInvariant | RegexOptions.ECMAScript, TimeSpan.FromMilliseconds(50)),
-                "minimum" => value.ValueKind != JsonValueKind.Number || value.GetDecimal() >= rule.Value.GetDecimal(),
-                "maximum" => value.ValueKind != JsonValueKind.Number || value.GetDecimal() <= rule.Value.GetDecimal(),
-                "exclusiveMinimum" => value.ValueKind != JsonValueKind.Number || value.GetDecimal() > rule.Value.GetDecimal(),
-                "exclusiveMaximum" => value.ValueKind != JsonValueKind.Number || value.GetDecimal() < rule.Value.GetDecimal(),
+                "minimum" => value.ValueKind != JsonValueKind.Number || ExactDecimal(value) >= ExactDecimal(rule.Value),
+                "maximum" => value.ValueKind != JsonValueKind.Number || ExactDecimal(value) <= ExactDecimal(rule.Value),
+                "exclusiveMinimum" => value.ValueKind != JsonValueKind.Number || ExactDecimal(value) > ExactDecimal(rule.Value),
+                "exclusiveMaximum" => value.ValueKind != JsonValueKind.Number || ExactDecimal(value) < ExactDecimal(rule.Value),
                 "multipleOf" => value.ValueKind != JsonValueKind.Number ||
-                    (rule.Value.GetDecimal() > 0 && value.GetDecimal() % rule.Value.GetDecimal() == 0),
+                    (ExactDecimal(rule.Value) > 0 && ExactDecimal(value) % ExactDecimal(rule.Value) == 0),
                 _ => false
             };
             if (!valid) return false;
@@ -73,6 +73,34 @@ internal static class NeedleArgumentSchema
         return true;
     }
 
+    private static decimal ExactDecimal(JsonElement element)
+    {
+        var number = element.GetDecimal();
+        if (NormalizeNumber(element.GetRawText()) != NormalizeNumber(number.ToString(CultureInfo.InvariantCulture)))
+            throw new FormatException("The schema comparison requires an exactly representable decimal.");
+        return number;
+    }
+
+    private static (bool Negative, string Digits, long Exponent) NormalizeNumber(string text)
+    {
+        var exponentMarker = text.AsSpan().IndexOfAny('e', 'E');
+        var significand = exponentMarker < 0 ? text : text[..exponentMarker];
+        var digits = significand.TrimStart('-').Replace(".", "", StringComparison.Ordinal).TrimStart('0');
+        if (digits.Length == 0) return (false, "", 0);
+        var point = significand.IndexOf('.');
+        var places = point < 0 ? 0 : significand.Length - point - 1;
+        var explicitExponent = exponentMarker < 0 ? 0 : int.Parse(text.AsSpan(exponentMarker + 1),
+            NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture);
+        var significant = digits.TrimEnd('0');
+        return (text[0] == '-', significant, (long)explicitExponent - places + digits.Length - significant.Length);
+    }
+
+    private static bool IsInteger(JsonElement value)
+    {
+        var number = ExactDecimal(value);
+        return decimal.Truncate(number) == number;
+    }
+
     private static int RuneCount(JsonElement value) => value.GetString()!.EnumerateRunes().Count();
 
     private static bool HasType(JsonElement value, string? type) => type switch
@@ -83,7 +111,7 @@ internal static class NeedleArgumentSchema
         "null" => value.ValueKind == JsonValueKind.Null,
         "boolean" => value.ValueKind is JsonValueKind.True or JsonValueKind.False,
         "number" => value.ValueKind == JsonValueKind.Number,
-        "integer" => value.ValueKind == JsonValueKind.Number && value.TryGetDecimal(out var number) && decimal.Truncate(number) == number,
+        "integer" => value.ValueKind == JsonValueKind.Number && IsInteger(value),
         _ => false
     };
 
@@ -105,7 +133,7 @@ internal static class NeedleArgumentSchema
             JsonValueKind.Array => left.GetArrayLength() == right.GetArrayLength() &&
                 left.EnumerateArray().Zip(right.EnumerateArray()).All(pair => Equal(pair.First, pair.Second)),
             JsonValueKind.String => left.GetString() == right.GetString(),
-            JsonValueKind.Number => left.GetDecimal() == right.GetDecimal(),
+            JsonValueKind.Number => ExactDecimal(left) == ExactDecimal(right),
             _ => true
         };
     }

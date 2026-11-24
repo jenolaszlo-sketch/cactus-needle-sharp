@@ -13,7 +13,7 @@ public sealed partial class Needle3NativeTests
     private static NeedleOptions Runtime => new() { CacheDirectory = Cache, Threads = 4 };
     private static readonly NeedleTool Weather = NeedleTool.FromJson("""
         {"name":"get_weather","description":"Get current weather for a city","parameters":{"type":"object",
-         "properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}}
+         "properties":{"city":{"type":"string","minLength":1}},"required":["city"],"additionalProperties":false}}
         """);
     private static readonly NeedleTool Search = NeedleTool.FromJson("""
         {"name":"search_repository","description":"Search source code in a repository","parameters":{"type":"object",

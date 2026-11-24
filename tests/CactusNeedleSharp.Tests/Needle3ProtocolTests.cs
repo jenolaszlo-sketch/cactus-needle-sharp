@@ -18,6 +18,8 @@ public sealed class Needle3ProtocolTests
     [InlineData("""{"mode":"eco","level":2,"label":"🌵a"}""", true)]
     [InlineData("""{"mode":"other","level":2}""", false)]
     [InlineData("""{"mode":"eco","level":2.5}""", false)]
+    [InlineData("""{"mode":"eco","level":2.000000000000000000000000000001}""", false)]
+    [InlineData("""{"mode":"eco","level":2e0}""", true)]
     [InlineData("""{"mode":"eco","level":7}""", false)]
     [InlineData("""{"mode":"eco","label":"okay"}""", false)]
     [InlineData("""{"mode":"eco","level":2,"label":"z"}""", false)]

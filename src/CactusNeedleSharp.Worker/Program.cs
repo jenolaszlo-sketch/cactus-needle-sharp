@@ -83,12 +83,25 @@ internal static class WorkerHost
                 ?? throw new NeedleWorkerException("Initialize payload is missing.");
             if (session is not null) { await session.DisposeAsync().ConfigureAwait(false); session = null; }
             if (client is not null) { await client.DisposeAsync().ConfigureAwait(false); client = null; }
-            client = await NeedleClient.CreateAsync(initialization.Runtime).ConfigureAwait(false);
-            session = await client.CreateSessionAsync(initialization.Tools, initialization.Session).ConfigureAwait(false);
+            var runtime = initialization.Runtime;
+            var sessionOptions = initialization.Session;
+            if (!string.IsNullOrWhiteSpace(sessionOptions?.WeightsPath))
+            {
+                runtime = runtime with
+                {
+                    ModelPath = sessionOptions.WeightsPath,
+                    ExpectedModelSha256 = runtime.ModelPath == sessionOptions.WeightsPath ? runtime.ExpectedModelSha256 : null
+                };
+                sessionOptions = sessionOptions with { WeightsPath = null };
+            }
+            client = await NeedleClient.CreateAsync(runtime).ConfigureAwait(false);
+            session = await client.CreateSessionAsync(initialization.Tools, sessionOptions).ConfigureAwait(false);
             return new JsonObject
             {
                 ["initialized"] = true,
-                ["runtimeInfo"] = JsonSerializer.SerializeToNode(session.RuntimeInfo, NeedleJsonContext.Default.NeedleRuntimeInfo)
+                ["runtimeInfo"] = session.RuntimeInfo is { } info
+                    ? JsonSerializer.SerializeToNode(info, NeedleJsonContext.Default.NeedleRuntimeInfo)
+                    : null
             };
         }
 

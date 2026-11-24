@@ -56,8 +56,21 @@ internal static class NativeComparison
         clock.Restart();
         await using var worker = await pool.CreateSessionAsync(Tools);
         var workerFirstSession = clock.Elapsed.TotalMilliseconds;
-        await worker.CompleteAsync(Cases[0].Prompt);
+        int? workerPid = null;
+        using (var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "CactusNeedleSharp",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = activity => workerPid = activity.GetTagItem("process.pid") as int?
+        })
+        {
+            ActivitySource.AddActivityListener(listener);
+            await worker.CompleteAsync(Cases[0].Prompt);
+        }
         var isolated = await SampleAsync(worker);
+        using var child = workerPid is { } pid ? Process.GetProcessById(pid) : null;
+        var workerMemory = child?.WorkingSet64 / 1048576d;
+        var workerPeakMemory = child?.PeakWorkingSet64 / 1048576d;
         await worker.DisposeAsync();
         clock.Restart();
         await using var reused = await pool.CreateSessionAsync(Tools);
@@ -74,6 +87,8 @@ internal static class NativeComparison
             WorkerHandshakeMs = workerHandshake,
             WorkerFirstSessionMs = workerFirstSession,
             WorkerReusedSessionMs = workerReuse,
+            WorkerWorkingSetMiB = workerMemory,
+            WorkerPeakWorkingSetMiB = workerPeakMemory,
             Direct = Summarize(direct),
             Isolated = Summarize(isolated),
             Cases = direct.GroupBy(item => item.Case.Prompt).Select(group => new
