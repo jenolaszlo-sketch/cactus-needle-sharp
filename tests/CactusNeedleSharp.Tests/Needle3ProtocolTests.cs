@@ -79,7 +79,45 @@ public sealed class Needle3ProtocolTests
     }
 
     [Theory]
+    [InlineData(true, null, "native_failure")]
+    [InlineData(true, "Native completion failed", null)]
+    [InlineData(false, "Token limit", "limit")]
+    public void NativeErrorOverridesDeclaredSuccessAndConfidence(bool success, string? error, string? errorCode)
+    {
+        var json = JsonSerializer.Serialize(new
+        {
+            type = "call", success, error, error_code = errorCode, confidence = 1,
+            function_calls = new[] { new { name = "set", arguments = new { mode = "eco", level = 2 } } },
+            suppressed_calls = Array.Empty<object>()
+        });
+
+        var result = Parse(json);
+        Assert.False(result.Success);
+        Assert.Empty(result.Calls);
+        Assert.Single(result.RejectedCalls);
+        Assert.Equal(error, result.Error);
+        Assert.Equal(errorCode, result.ErrorCode);
+        Assert.Equal(NeedleCompilationOutcome.Failed, result.GetOutcome());
+        Assert.False(result.IsConfident(0));
+    }
+
+    [Theory]
+    [InlineData("[]", NeedleCompilationOutcome.NoCall)]
+    [InlineData("""[{"name":"set","arguments":{"mode":"eco","level":2}}]""", NeedleCompilationOutcome.Suppressed)]
+    public void EmptyAndSuppressedResponsesRemainValidWithoutNativeError(string suppressed, NeedleCompilationOutcome expected)
+    {
+        var result = Parse($$"""
+            {"type":"call","success":true,"confidence":0.95,"function_calls":[],"suppressed_calls":{{suppressed}},"error":null,"error_code":null}
+            """);
+        Assert.True(result.Success);
+        Assert.Empty(result.Calls);
+        Assert.Equal(expected, result.GetOutcome());
+        Assert.False(result.IsConfident(0));
+    }
+
+    [Theory]
     [InlineData("""{"type":"call","function_calls":[],"suppressed_calls":[]}""")]
+    [InlineData("""{"type":"call","success":false,"error":null,"error_code":null}""")]
     [InlineData("""{"type":"call","success":true,"function_calls":[]}""")]
     [InlineData("""{"type":"call","success":true,"function_calls":[],"suppressed_calls":[],"confidence":1.1}""")]
     [InlineData("""{"type":"call","success":true,"function_calls":[{"name":"set"}],"suppressed_calls":[]}""")]

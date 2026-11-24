@@ -56,6 +56,19 @@ Native execution tests are opt-in. See [integration testing](docs/integration-te
 
 Release packaging is audited in CI: the package license, README, license and notice files are verified, and packaging fails if model weights or native Needle runtime binaries enter the NuGet archive unexpectedly.
 
+## Independent benchmark
+
+Release Q1 reran both versions on the same Windows x64 host.
+
+| Metric | Needle 2 | Needle 3 |
+|---|---:|---:|
+| Median warm inference | 181 ms | 297 ms |
+| Direct working set | 59 MiB | 135 MiB |
+| Correct proposals accepted at 0.80 | 20 | 15 |
+| False positives accepted at 0.80 | 5 | 0 |
+
+The [independent Q1 report](docs/reviews/cactus-needle-sharp-n3-release-q1.md#independent-benchmark) gives the workload and labels the earlier producer run separately.
+
 ## Sessions and extraction
 
 ```csharp

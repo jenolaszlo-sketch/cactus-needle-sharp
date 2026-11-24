@@ -20,9 +20,11 @@ internal static class NeedleProtocol
                 throw new NeedleProtocolException("Cactus returned a response with duplicate JSON properties.");
             var response = document.RootElement.Deserialize(NeedleJsonContext.Default.Response)
                 ?? throw new NeedleProtocolException("Cactus returned an empty response.");
+            var hasNativeError = !string.IsNullOrWhiteSpace(response.Error) || !string.IsNullOrWhiteSpace(response.ErrorCode);
+            var success = response.Success && !hasNativeError;
             if (string.IsNullOrWhiteSpace(response.Type) ||
-                (response.Success && (response.FunctionCalls is null || response.SuppressedCalls is null || response.Error is not null)) ||
-                (!response.Success && string.IsNullOrWhiteSpace(response.Error) && string.IsNullOrWhiteSpace(response.ErrorCode)))
+                (success && (response.FunctionCalls is null || response.SuppressedCalls is null || response.Error is not null)) ||
+                (!response.Success && !hasNativeError))
                 throw new NeedleProtocolException("Cactus returned an incomplete or inconsistent response envelope.");
             if (response.Confidence is { } confidence && (!double.IsFinite(confidence) || confidence is < 0 or > 1))
                 throw new NeedleProtocolException("Cactus returned confidence outside the interval [0, 1].");
@@ -43,7 +45,7 @@ internal static class NeedleProtocol
             foreach (var call in calls)
             {
                 var tool = tools.FirstOrDefault(tool => tool.Name == call.Name);
-                if (!response.Success || withheld || tool is null || !NeedleArgumentSchema.Matches(call.Arguments, tool.Parameters))
+                if (!success || withheld || tool is null || !NeedleArgumentSchema.Matches(call.Arguments, tool.Parameters))
                     rejected.Add(call);
                 else
                     accepted.Add(call);
@@ -51,7 +53,7 @@ internal static class NeedleProtocol
 
             return new()
             {
-                Success = response.Success,
+                Success = success,
                 ResponseType = response.Type,
                 Calls = accepted.ToArray(),
                 SuppressedCalls = suppressed,

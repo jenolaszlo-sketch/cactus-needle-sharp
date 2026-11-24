@@ -10,7 +10,7 @@ internal static class NeedleExtractionResults
         ArgumentNullException.ThrowIfNull(compilation);
         ArgumentNullException.ThrowIfNull(deserialize);
         if (!compilation.Success)
-            return new() { Success = false, Confidence = compilation.Confidence, Error = compilation.Error, Compilation = compilation };
+            return new() { Success = false, Confidence = compilation.Confidence, Error = compilation.Error ?? compilation.ErrorCode, Compilation = compilation };
         if (compilation.GetOutcome() is NeedleCompilationOutcome.Suppressed or NeedleCompilationOutcome.Failed)
             return new() { Success = false, Confidence = compilation.Confidence, Error = "Needle withheld or rejected the extraction call.", Compilation = compilation };
         if (compilation.Calls.Count != 1 || !string.Equals(compilation.Calls[0].Name, expectedToolName, StringComparison.Ordinal))

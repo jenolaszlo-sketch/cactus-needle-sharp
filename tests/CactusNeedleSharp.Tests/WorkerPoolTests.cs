@@ -61,16 +61,50 @@ public sealed class WorkerPoolTests
     }
 
     [Fact]
+    public async Task NativeErrorRemainsAFailedCompilationAndCannotExtractAValue()
+    {
+        await using var pool = CreatePool();
+        var compilation = await pool.CompileAsync("native-failure", [Tool]);
+        Assert.False(compilation.Success);
+        Assert.Empty(compilation.Calls);
+        Assert.Equal("native_failure", compilation.ErrorCode);
+        Assert.Equal(NeedleCompilationOutcome.Failed, compilation.GetOutcome());
+        Assert.False(compilation.IsConfident(0));
+
+        var extraction = await pool.ExtractAsync<FixtureValue>("native-failure");
+        Assert.False(extraction.Success);
+        Assert.Null(extraction.Value);
+        Assert.Equal("native_failure", extraction.Error);
+        Assert.Equal("native_failure", extraction.Compilation.ErrorCode);
+        Assert.Equal(NeedleCompilationOutcome.Failed, extraction.GetOutcome());
+    }
+
+    public sealed record FixtureValue(int Value);
+
+    [Fact]
     public async Task DisposeWaitsForInFlightOperationAndIsIdempotent()
     {
-        await using var pool = CreatePool(new() { RequestTimeout = TimeSpan.FromMilliseconds(200) });
-        var session = await pool.CreateSessionAsync([Tool]);
-        var completion = session.CompleteAsync("delay").AsTask();
-        await Task.Delay(50);
-        var firstDispose = session.DisposeAsync().AsTask();
-        var secondDispose = session.DisposeAsync().AsTask();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => completion);
-        await Task.WhenAll(firstDispose, secondDispose);
+        await using var pool = CreatePool(new() { MaximumWorkers = 1 });
+        await using var session = await pool.CreateSessionAsync([Tool]);
+        using var cancellation = new CancellationTokenSource();
+        // The first completion takes the session lease before returning its pending task.
+        var completion = session.CompleteAsync("delay", cancellationToken: cancellation.Token).AsTask();
+        try
+        {
+            Assert.False(completion.IsCompleted);
+            var firstDispose = session.DisposeAsync().AsTask();
+            var secondDispose = session.DisposeAsync().AsTask();
+            Assert.Same(firstDispose, secondDispose);
+            Assert.False(firstDispose.IsCompleted);
+
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => completion);
+            await Task.WhenAll(firstDispose, secondDispose);
+            Assert.Equal(0, pool.WorkerCount);
+            await using var replacement = await pool.CreateSessionAsync([Tool]);
+            Assert.True((await replacement.CompleteAsync("ok")).Success);
+        }
+        finally { cancellation.Cancel(); }
     }
 
     [Fact]
